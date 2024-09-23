@@ -1,0 +1,3292 @@
+---
+title: "Light Response Curve Analysis"
+date: "2024-09-18"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load packages and set conditions
+```{r}
+library(tidyverse)
+library(xlsx)
+library(readxl)
+library(Rphylopars)
+
+PARi <- c(0, 50, 100, 250, 500, 1000, 1500, 2000, 2500)
+PARi_fine <- seq(0,6000,by = .1)
+
+```
+
+Load saved environment (if applicable)
+```{r}
+if(file.exists("saved_state_09_18_2024.RData")) {
+  load(file = "saved_state_09_18_2024.RData")}
+```
+
+Load Data 
+```{r}
+# Phylogenetic tree 
+tree <- ape::read.tree("data/tree.tre")
+
+# Measured data
+dat <- read.csv("data/dat.csv") |> 
+  dplyr::select(Species,PARi,A,SpeciesRepDate) |> 
+  dplyr::rename(species = Species)
+
+# Life history, growth form, and clade categorizations 
+LH <- data.frame(species = c("H.agrestis", "H.annuus", "H.argophyllus",
+                             "H.atrorubens", "H.cusickii", "H.debilis",
+                             "H.divaricatus", "H.floridanus", "H.giganteus",
+                             "H.gracilentus", "H.grosseserratus",
+                             "H.heterophyllus", "H.longifolius",
+                             "H.maximiliani", "H.microcephalus", "H.mollis",
+                             "H.neglectus", "H.nuttallii", "H.occidentalis",
+                             "H.petiolaris", "H.praecox", "H.radula",
+                             "H.silphioides", "H.winteri","H.carnosus",
+                             "H.angustifolius", "H.salicifolius", 
+                             "H.arizonensis"),
+                 clade = c("N/A", "A", "A", "SE", 
+                           "LP", "A", "LP", "SE", "LP", 
+                           "N/A", "LP", "SE", "SE", 
+                           "LP", "LP", "N/A", "A", 
+                           "LP", "N/A", "A", 
+                           "A", "SE", "SE", "A", 
+                           "SE", "SE", "LP", "LP"),
+                 lifehist_2cats = c("A", "A", "A", "P", 
+                                    "P", "A", "P", "P", "P", 
+                                    "P", "P", "P", "P", 
+                                    "P", "P", "P", "A", 
+                                    "P", "P", "A", 
+                                    "A", "P", "P", "A",
+                                    "P", "P", "P", "P"),
+                 lifehist_3cats = c("A", "A", "A", "EP",
+                                    "EP", "A", "EP", "EP", "EP",
+                                    "EP", "EP", "BRP", "BRP",
+                                    "EP", "EP", "EP", "A",
+                                    "EP", "BRP", "A",
+                                    "A", "BRP", "EP", "A",
+                                    "BRP", "EP", "EP", "EP"
+                 ))
+
+# Leaf width data to adjust for any species with leaves too small for the 
+# standardized area of the gas exchange chamber 
+widths <- read.csv("data/leaf_widths.csv")
+
+# Area correction for species with small leaves 
+correct_area <- function(species,SE_adjust = 0,dat,weighted = TRUE)
+{
+  sp <- paste("H.",tolower(species),sep = "")
+  wd <- widths[widths$Species==species,]$Width
+  
+  mean_height <- dat[dat$species==sp & dat$PARi==2500,]$A * mean((18/wd))
+  var_height <- (sd(18/wd) * dat[dat$species==sp & dat$PARi==2500,]$A)^2
+  if(weighted){
+    new_heights <- (mod$anc_recon[sp,]*var_height + 
+                      mean_height*(mod$anc_var[sp,]+mod$pars[[2]][1,1])) / 
+      ((mod$anc_var[sp,]+mod$pars[[2]][1,1]) + var_height)
+    new_vars <- 1/(1/(mod$anc_var[sp,]+mod$pars[[2]][1,1]) + 1/var_height)
+    if(SE_adjust != 0) new_heights <- new_heights + SE_adjust*sqrt(new_vars)
+    mults <- new_heights / dat[dat$species==sp & dat$PARi==2500,]$A
+  } else
+  {
+    if(SE_adjust != 0) mean_height <- mean_height + SE_adjust*sqrt(var_height)
+    mults <- mean_height / dat[dat$species==sp & dat$PARi==2500,]$A
+  }
+  
+  mults <- setNames(mults,dat[dat$species==sp & dat$PARi==2500,]$SpeciesRepDate)
+  for(i in 1:length(mults))
+  {
+    dat[dat$SpeciesRepDate==names(mults)[i],"A"] <- 
+      round(dat[dat$SpeciesRepDate==names(mults)[i],"A"] * mults[i],2)
+  }
+  dat
+}
+
+# get A at PARi=2500
+phy_dat <- dat[dat$PARi==2500 | dat$PARi==2000 & 
+                 dat$species=="H.radula",c("species","A")]
+
+# remove narrow-leaf species
+phy_dat <- phy_dat[-which(phy_dat$species %in% 
+                          paste("H.",tolower(unique(widths$Species)),sep="")),]
+phy_dat <- phy_dat[complete.cases(phy_dat),]
+colnames(phy_dat)[1] <- "species"
+
+# run model to get species-level estimates of A for narrow-leaf species
+mod <- Rphylopars::phylopars(phy_dat,tree,model='lambda')
+
+SE <- c(ang = 0,
+        carn = 0,
+        ari = 0,
+        sal = 0)
+
+# add adjustments to the data set 
+dat <- correct_area(species = "Angustifolius",SE_adjust = SE["ang"],dat = dat)
+dat <- correct_area(species = "Carnosus",SE_adjust = SE["carn"],dat = dat)
+dat <- correct_area(species = "Arizonensis",SE_adjust = SE["ari"],dat = dat)
+dat <- correct_area(species = "Salicifolius",SE_adjust = SE["sal"],dat = dat)
+
+# make long data frame for plots
+   dat_long <- dat |> 
+     tidyr::pivot_wider(
+     id_cols = c(species,SpeciesRepDate),
+     names_from = PARi,
+     names_prefix = "PARi_",
+     values_from = A) |>
+  dplyr::select(-SpeciesRepDate)
+
+# indexing species names
+inds <- unique(dat$SpeciesRepDate)
+ind_species <- dat$species[match(inds,dat$SpeciesRepDate)]
+
+# External Data for ecophysiological comparisons 
+m2016a <- read.xlsx(file = "processed_data/mason_data.xlsx",
+                    sheetName = "m2016a")
+m2016a_nozero <- read.xlsx(file = "processed_data/mason_data.xlsx",
+                           sheetName = "m2016a_nozero")
+
+# genome size
+g <-
+  c(H.agrestis = 22.9322222222222, H.angustifolius = 12.7266666666667, 
+    H.annuus = 7.195, H.argophyllus = 8.70777777777778, 
+    H.arizonensis = 8.04833333333333, H.atrorubens = 11.2441666666667,
+    H.carnosus = 12.3083333333333, 
+    H.cusickii = 9.005, H.debilis = 8.54, H.divaricatus = 8.44375, 
+    H.floridanus = 12.7323076923077, H.giganteus = 8.89166666666667, 
+    H.gracilentus = 12.0216666666667, H.grosseserratus = 8.75625, 
+    H.heterophyllus = 10.65, H.longifolius = 9.91666666666667, 
+    H.maximiliani = 8.73, 
+    H.microcephalus = 9.4, H.mollis = 9.880625, H.neglectus = 6.37444444444444, 
+    H.nuttallii = 9.18411764705882, H.occidentalis = 8.93142857142857, 
+    H.petiolaris = 6.69133333333333, H.praecox = 7.63285714285714, 
+    H.radula = 11.0976923076923, H.salicifolius = 8.8575, 
+    H.silphioides = 11.8533333333333, H.winteri = 7.1)
+
+```
+
+Create folder for results and export corrected data 
+```{r}
+# Create folder to export results
+ifelse(!dir.exists("final_results"), dir.create("final_results"), "Folder exists already")
+
+# Save finalized data file
+write.xlsx(x = dat,file = "final_results/data.xlsx",sheetName = "long")
+dat_wide <- dat %>% pivot_wider(id_cols = c(species,SpeciesRepDate),names_from = PARi,names_prefix = "PARi_",values_from = A)
+write.xlsx(x = dat,file = "final_results/data.xlsx",sheetName = "wide",append = TRUE)
+```
+
+Equation functions for photosynthetic models 
+```{r}
+# Michaelis-Menton Model (Baly 1935)
+eq1 <- function(pars = 
+                  c(Pgmax = 19.5,phi_I0 = .0899,Rd = 1.8),
+                dat,
+                PARi = c(0, 50, 100, 250, 500, 1000, 1500, 2000, 2500),
+                return = c("predict","calc","all")[1])
+{
+  # Photosynthetic model
+  mod <- NULL
+  if(!missing(dat))
+  {
+    PARi <- dat$PARi
+    if(any(PARi==0)) if(any(!is.na(dat$A[PARi==0]))) pars[["Rd"]] <-     abs(dat$A[which(!is.na(dat$A[PARi==0]))][1]) 
+    pars[["Pgmax"]] <- max(dat$A,na.rm = TRUE) + pars[["Rd"]]
+    pars <- optim(par = pars,function(pars) sum(((dat$A) -
+           (((pars[["phi_I0"]]*dat$PARi*pars[["Pgmax"]])/(pars[["phi_I0"]]*
+              dat$PARi+pars[["Pgmax"]]))-pars[["Rd"]]))^2),
+                control=list(fnscale=1))$par
+    try({ pars <- optim(par = pars,function(pars) sum(((dat$A) -
+                  (((pars[["phi_I0"]]*dat$PARi*pars[["Pgmax"]])/
+                      (pars[["phi_I0"]]*dat$PARi+pars[["Pgmax"]]))-
+                        pars[["Rd"]]))^2),control=list(fnscale=1),
+                          method = "BFGS")$par },silent = TRUE)
+    try({ 
+      mod <- nls(control = nls.control(maxiter = 1000),
+                 A~((phi_I0*PARi*Pgmax)/(phi_I0*PARi+Pgmax))-Rd,
+                 data = dat,start = pars)
+      pars <- coef(mod)
+    },silent = TRUE)
+  }
+  
+  # Parameters to optimize
+  Pgmax <- pars[["Pgmax"]]
+  phi_I0 <- pars[["phi_I0"]]
+  Rd <- pars[["Rd"]]
+  
+  # Predicted values
+  pred <- ((phi_I0*PARi*Pgmax)/(phi_I0*PARi+Pgmax))-Rd
+  if(return == "predict") return(pred)
+  
+  # Calculated quantities
+  Icomp <- Rd*Pgmax/((phi_I0*(Pgmax-Rd)))
+  x <- c(.05,.1,.15,.25,.5,.75,.85,.9,.95)
+  PARi_fine <- seq(0,6000,by = .1)
+  pred_fine <- ((phi_I0*PARi_fine*Pgmax)/(phi_I0*PARi_fine+Pgmax))-Rd
+  
+  Isat_x <- (Rd*Pgmax*(x-1)-x*(Pgmax^2))/(phi_I0*(Pgmax*(x-1)+Rd*(1-x)))
+  
+  lo_inds <- which(PARi_fine <= (max(PARi_fine)-50))
+  hi_inds <- lo_inds + (length(PARi_fine) - max(lo_inds))
+  diffs <- (pred_fine[hi_inds] - pred_fine[lo_inds])
+  if(any(diffs <= .067)) Imax <- PARi_fine[which(diffs <= .067)[1]] else 
+    Imax <- max(PARi_fine)
+  
+  Pmax <- max(pred_fine)
+  P_Imax <- pred_fine[which.min(abs(Imax - PARi_fine))[1]]
+  phi_Icomp <- (phi_I0*(Pgmax^2))/((phi_I0*Icomp+Pgmax)^2)
+  I0_Icomp <- if(Icomp <= 0) I0_Icomp <- 1:2 else which(PARi_fine <= Icomp)   
+  Icomp_I200 <- which(PARi_fine >= Icomp & PARi_fine <= 200)
+  
+  phi_I0_Icomp <- as.numeric(coef(lm(pred_fine[I0_Icomp] ~ 
+                                       PARi_fine[I0_Icomp]))[2])
+  phi_Icomp_I200 <- as.numeric(coef(lm(pred_fine[Icomp_I200] ~ 
+                                         PARi_fine[Icomp_I200]))[2])
+  
+  P2500 <- pred_fine[PARi_fine == 2500]
+  
+  Ix <- sapply(x,function(x){
+    ind_x <- which((pred_fine - (x*P2500))>0 & PARi_fine < 
+                     PARi_fine[which.max(pred_fine[PARi_fine <= 2500])])[1]
+    if(is.na(ind_x)) return(NA)
+    ind_x <- c((ind_x-1):(ind_x+1))
+    Ix_mod <- lm(y~x,data.frame(x=PARi_fine[ind_x],y=pred_fine[ind_x]))
+    (((x*P2500)-coef(Ix_mod)[[1]])/coef(Ix_mod)[[2]])
+  })
+  
+  calc <- c(Pgmax = Pgmax,
+            phi_I0 = phi_I0,
+            Rd = Rd,
+            Icomp = Icomp,
+            Isat_25 = Isat_x[x==.25],Isat_50 = Isat_x[x==.5],
+            Isat_75 = Isat_x[x==.75],Isat_85 = Isat_x[x==.85],
+            Isat_90 = Isat_x[x==.9],
+            Isat_95 = Isat_x[x==.95],
+            Psat_25 = .25*(Pgmax-Rd),Psat_50 = .5*(Pgmax-Rd),
+            Psat_75 = .75*(Pgmax-Rd),Psat_85 = .85*(Pgmax-Rd),
+            Psat_90 = .90*(Pgmax-Rd),
+            Psat_95 = .95*(Pgmax-Rd),
+            I5 = Ix[x==.05],I10 = Ix[x==.1],I15 = Ix[x==.15],
+            I25 = Ix[x==.25],I50 = Ix[x==.5],
+            I75 = Ix[x==.75],I85 = Ix[x==.85],
+            I90 = Ix[x==.9],
+            I95 = Ix[x==.95],
+            P25 = .25*Pgmax-Rd,P50 = .5*Pgmax-Rd,
+            P75 = .75*Pgmax-Rd,P85 = .85*Pgmax-Rd,
+            P90 = .90*Pgmax-Rd,
+            P95 = .95*Pgmax-Rd,
+            Imax = Imax,
+            Pmax = Pmax,
+            phi_Icomp = phi_Icomp,
+            phi_I0_Icomp = phi_I0_Icomp,
+            phi_Icomp_I200 = phi_Icomp_I200,
+            P_Imax = P_Imax,
+            Imax_obs = 2500,Pmax_obs = pred_fine[PARi_fine == 2500])  
+  if(return == "calc") return(calc)
+  
+  fit <- c(r2 = cor(dat$A,pred,use = "pair")^2,
+           mse = mean((dat$A-pred)^2,na.rm = TRUE),list(pars = pars),
+           list(mod = mod))
+  
+  return(list(calc = calc,pred = pred,pred_fine = pred_fine,fit = fit))
+}
+
+# Michaelis-Menton Model (Kaipiainenn 2009)
+eq2 <- function(pars = 
+                  c(Pgmax = 19.5,I50 = 216.4,Rd = 1.8),
+                dat,
+                PARi = c(0, 50, 100, 250, 500, 1000, 1500, 2000, 2500),
+                return = c("predict","calc","all")[1])
+{ 
+  # Photosynthetic model
+  mod <- NULL
+  if(!missing(dat))
+  {
+    PARi <- dat$PARi
+    if(any(PARi==0)) if(any(!is.na(dat$A[PARi==0]))) pars[["Rd"]] <- 
+        abs(dat$A[which(!is.na(dat$A[PARi==0]))][1]) 
+    pars[["Pgmax"]] <- max(dat$A,na.rm = TRUE) + pars[["Rd"]]
+    
+    pars <- optim(par = pars,function(pars) sum(((dat$A) - 
+            (((pars[["Pgmax"]]*dat$PARi)/(dat$PARi+pars[["I50"]]))-
+               pars[["Rd"]]))^2), control=list(fnscale=1))$par
+    try({
+      pars <- optim(par = pars,function(pars) sum(((dat$A) - 
+             (((pars[["Pgmax"]]*dat$PARi)/(dat$PARi+pars[["I50"]]))-
+                pars[["Rd"]]))^2),control=list(fnscale=1))$par
+    },silent = TRUE)
+    try({
+      mod <- nls(control = nls.control(maxiter = 1000),
+                 A~((Pgmax*PARi)/(PARi+I50))-Rd,data = dat,start = pars)
+      pars <- coef(mod)
+    },silent = TRUE)
+  }
+  
+  # Parameters to optimize
+  Pgmax <- pars[["Pgmax"]]
+  I50 <- pars[["I50"]]
+  Rd <- pars[["Rd"]]
+  
+  # Predicted values
+  pred <- ((Pgmax*PARi)/(PARi+I50))-Rd
+  if(return == "predict") return(pred)
+  
+  phi_I0 <- (I50*Pgmax)/((0+I50)^2)
+  
+  # Calculated quantities
+  Icomp <- (I50*Rd)/(Pgmax-Rd)
+  x <- c(.05,.1,.15,.25,.5,.75,.85,.9,.95)
+  PARi_fine <- seq(0,6000,by = .1)
+  pred_fine <- ((Pgmax*PARi_fine)/(PARi_fine+I50))-Rd
+  Isat_x <- (I50*(x*Rd-x*Pgmax-Rd))/(Pgmax*(x-1)+Rd*(1-x))
+  lo_inds <- which(PARi_fine <= (max(PARi_fine)-50))
+  hi_inds <- lo_inds + (length(PARi_fine) - max(lo_inds))
+  
+  diffs <- (pred_fine[hi_inds] - pred_fine[lo_inds])
+  if(any(diffs <= .067)) Imax <- PARi_fine[which(diffs <= .067)[1]] else 
+    Imax <- max(PARi_fine)
+  
+  Pmax <- max(pred_fine)
+  P_Imax <- pred_fine[which.min(abs(Imax -PARi_fine))[1]]
+  phi_Icomp <-(I50*Pgmax)/((Icomp+I50)^2)
+  I0_Icomp <- if(Icomp <= 0) I0_Icomp <- 1:2 else which(PARi_fine <= Icomp)   
+  Icomp_I200 <- which(PARi_fine >= Icomp & PARi_fine <= 200)
+  
+  phi_I0_Icomp <- as.numeric(coef(lm(pred_fine[I0_Icomp] ~ 
+                                       PARi_fine[I0_Icomp]))[2])
+  phi_Icomp_I200 <- as.numeric(coef(lm(pred_fine[Icomp_I200] ~ 
+                                         PARi_fine[Icomp_I200]))[2])
+  
+  P2500 <- pred_fine[PARi_fine == 2500]
+  
+  Ix <- sapply(x,function(x){
+    ind_x <- which((pred_fine - (x*P2500))>0 & PARi_fine < 
+                     PARi_fine[which.max(pred_fine[PARi_fine <= 2500])])[1]
+    if(is.na(ind_x)) return(NA)
+    ind_x <- c((ind_x-1):(ind_x+1))
+    Ix_mod <- lm(y~x,data.frame(x=PARi_fine[ind_x],y=pred_fine[ind_x]))
+    (((x*P2500)-coef(Ix_mod)[[1]])/coef(Ix_mod)[[2]])
+  })
+  
+  calc <- c(Pgmax = Pgmax,
+            phi_I0 = phi_I0,
+            Rd = Rd,
+            Icomp = Icomp,
+            Isat_25 = Isat_x[x==.25],Isat_50 = Isat_x[x==.5],
+            Isat_75 = Isat_x[x==.75],Isat_85 = Isat_x[x==.85],
+            Isat_90 = Isat_x[x==.9],
+            Isat_95 = Isat_x[x==.95],
+            Psat_25 = .25*(Pgmax-Rd),Psat_50 = .5*(Pgmax-Rd),
+            Psat_75 = .75*(Pgmax-Rd),Psat_85 = .85*(Pgmax-Rd),
+            Psat_90 = .90*(Pgmax-Rd),
+            Psat_95 = .95*(Pgmax-Rd),
+            I5 = Ix[x==.05],I10 = Ix[x==.1],I15 = Ix[x==.15],
+            I25 = Ix[x==.25],I50 = Ix[x==.5],
+            I75 = Ix[x==.75],I85 = Ix[x==.85],
+            I90 = Ix[x==.9],
+            I95 = Ix[x==.95],
+            P25 = .25*Pgmax-Rd,P50 = .5*Pgmax-Rd,
+            P75 = .75*Pgmax-Rd,P85 = .85*Pgmax-Rd,
+            P90 = .90*Pgmax-Rd,
+            P95 = .95*Pgmax-Rd,
+            Imax = Imax,
+            Pmax = Pmax,
+            phi_Icomp = phi_Icomp,
+            phi_I0_Icomp = phi_I0_Icomp,
+            phi_Icomp_I200 = phi_Icomp_I200,
+            P_Imax = P_Imax,
+            Imax_obs = 2500,Pmax_obs = pred_fine[PARi_fine == 2500])
+  
+  if(return == "calc") return(calc)
+  fit <- c(r2 = cor(dat$A,pred,use = "pair")^2,
+           mse = mean((dat$A-pred)^2,na.rm = TRUE),list(pars = pars),
+           list(mod = mod))
+  
+  return(list(calc = calc,pred = pred,pred_fine = pred_fine,fit = fit))
+}
+# Michaelis-Menton Model (Smith 1936)
+eq3 <- function(pars = 
+                  c(Pgmax = 19.5,phi_I0 = .0493,Rd = 1.8),
+                dat,
+                PARi = c(0, 50, 100, 250, 500, 1000, 1500, 2000, 2500),
+                return = c("predict","calc","all")[1])
+{ 
+  # Photosynthetic model
+  mod <- NULL
+  if(!missing(dat))
+  {
+    PARi <- dat$PARi
+    if(any(PARi==0)) if(any(!is.na(dat$A[PARi==0]))) pars[["Rd"]] <- 
+        abs(dat$A[which(!is.na(dat$A[PARi==0]))][1]) 
+    pars[["Pgmax"]] <- max(dat$A,na.rm = TRUE) + pars[["Rd"]]
+    
+    pars <- optim(par = pars,function(pars) sum(((dat$A) - 
+            ((pars[["phi_I0"]]*dat$PARi*pars[["Pgmax"]])/(((pars[["Pgmax"]]^2)
+                +(pars[["phi_I0"]]^2)*(dat$PARi^2))^0.5)-pars[["Rd"]]))^2),
+                  control=list(fnscale=1))$par
+    try({
+      pars <- optim(par = pars,function(pars) sum(((dat$A) -
+              ((pars[["phi_I0"]]*dat$PARi*pars[["Pgmax"]])/
+                 (((pars[["Pgmax"]]^2)+(pars[["phi_I0"]]^2)*(dat$PARi^2))^0.5)-
+                      pars[["Rd"]]))^2),control=list(fnscale=1))$par
+    },silent = TRUE)
+    
+    try({
+      mod <- nls(control = nls.control(maxiter = 1000),A~(phi_I0*PARi*Pgmax)/
+              (((Pgmax^2)+(phi_I0^2)*(PARi^2))^0.5)-Rd,data = dat,start = pars)
+      pars <- coef(mod)
+    },silent = TRUE)
+  }
+  
+  # Parameters to optimize
+  Pgmax <- pars[["Pgmax"]]
+  phi_I0 <- pars[["phi_I0"]]
+  Rd <- pars[["Rd"]]
+  
+  # Predicted values
+  pred <- (phi_I0*PARi*Pgmax)/(((Pgmax^2)+(phi_I0^2)*(PARi^2))^0.5)-Rd
+  if(return == "predict") return(pred)
+  
+  # calculated quantities
+  Icomp <- (Rd*Pgmax/phi_I0)*((1/((Pgmax^2)-(Rd^2)))^0.5)
+  x <- c(.05,.1,.15,.25,.5,.75,.85,.9,.95)
+  PARi_fine <- seq(0,6000,by = .1)
+  pred_fine <- (phi_I0*PARi_fine*Pgmax)/(((Pgmax^2)+(phi_I0^2)*
+                                            (PARi_fine^2))^0.5)-Rd
+  Isat_x <- ((((Pgmax-Rd)*x)+Rd)*Pgmax)/((((Pgmax^2)-
+                                        ((((Pgmax-Rd)*x)+Rd)^2))^0.5)*phi_I0)
+  phi_Icomp <- (phi_I0*(Pgmax^3))/(((phi_I0^2)*(Icomp^2)+(Pgmax^2))^(3/2))
+  lo_inds <- which(PARi_fine <= (max(PARi_fine)-50))
+  hi_inds <- lo_inds + (length(PARi_fine) - max(lo_inds))
+  
+  diffs <- (pred_fine[hi_inds] - pred_fine[lo_inds])
+  if(any(diffs <= .067)) Imax <- PARi_fine[which(diffs <= .067)[1]] else 
+    Imax <- max(PARi_fine)
+  
+  Pmax <- max(pred_fine)
+  P_Imax <- pred_fine[which.min(abs(Imax -PARi_fine))[1]]
+  I0_Icomp <- if(Icomp <= 0) I0_Icomp <- 1:2 else which(PARi_fine <= Icomp)   
+  Icomp_I200 <- which(PARi_fine >= Icomp & PARi_fine <= 200)
+  
+  phi_I0_Icomp <- as.numeric(coef(lm(pred_fine[I0_Icomp] ~ 
+                                       PARi_fine[I0_Icomp]))[2])
+  phi_Icomp_I200 <- as.numeric(coef(lm(pred_fine[Icomp_I200] ~ 
+                                         PARi_fine[Icomp_I200]))[2])
+  
+  P2500 <- pred_fine[PARi_fine == 2500]
+  
+  Ix <- sapply(x,function(x){
+    ind_x <- which((pred_fine - (x*P2500))>0 & PARi_fine < 
+                     PARi_fine[which.max(pred_fine[PARi_fine <= 2500])])[1]
+    if(is.na(ind_x)) return(NA)
+    ind_x <- c((ind_x-1):(ind_x+1))
+    Ix_mod <- lm(y~x,data.frame(x=PARi_fine[ind_x],y=pred_fine[ind_x]))
+    (((x*P2500)-coef(Ix_mod)[[1]])/coef(Ix_mod)[[2]])
+  })
+  
+  calc <- c(Pgmax = Pgmax,
+            phi_I0 = phi_I0,
+            Rd = Rd,
+            Icomp = Icomp,
+            Isat_25 = Isat_x[x==.25],Isat_50 = Isat_x[x==.5],
+            Isat_75 = Isat_x[x==.75],Isat_85 = Isat_x[x==.85],
+            Isat_90 = Isat_x[x==.9],
+            Isat_95 = Isat_x[x==.95],
+            Psat_25 = .25*(Pgmax-Rd),Psat_50 = .5*(Pgmax-Rd),
+            Psat_75 = .75*(Pgmax-Rd),Psat_85 = .85*(Pgmax-Rd),
+            Psat_90 = .90*(Pgmax-Rd),
+            Psat_95 = .95*(Pgmax-Rd),
+            I5 = Ix[x==.05],I10 = Ix[x==.1],I15 = Ix[x==.15],
+            I25 = Ix[x==.25],I50 = Ix[x==.5],
+            I75 = Ix[x==.75],I85 = Ix[x==.85],
+            I90 = Ix[x==.9],
+            I95 = Ix[x==.95],
+            P25 = .25*Pgmax-Rd,P50 = .5*Pgmax-Rd,
+            P75 = .75*Pgmax-Rd,P85 = .85*Pgmax-Rd,
+            P90 = .90*Pgmax-Rd,
+            P95 = .95*Pgmax-Rd,
+            Imax = Imax,
+            Pmax = Pmax,
+            phi_Icomp = phi_Icomp,
+            phi_I0_Icomp = phi_I0_Icomp,
+            phi_Icomp_I200 = phi_Icomp_I200,
+            P_Imax = P_Imax,
+            Imax_obs = 2500,Pmax_obs = pred_fine[PARi_fine == 2500])
+  
+  if(return == "calc") return(calc)
+  fit <- c(r2 = cor(dat$A,pred,use = "pair")^2,
+           mse = mean((dat$A-pred)^2,na.rm = TRUE),list(pars = pars),
+           list(mod = mod))
+  
+  return(list(calc = calc,pred = pred,pred_fine = pred_fine,fit = fit))
+}
+
+# Hyperbolic Tangent Based Model (Jassby & Platt 1976)
+eq4 <- function(pars = 
+                  c(Pgmax = 19.5,phi_I0 = .0493,Rd = 1.8),
+                dat,
+                PARi = c(0, 50, 100, 250, 500, 1000, 1500, 2000, 2500),
+                return = c("predict","calc","all")[1])
+{
+  # Photosynthetic model
+  mod <- NULL
+  if(!missing(dat))
+  {
+    PARi <- dat$PARi
+    if(any(PARi==0)) if(any(!is.na(dat$A[PARi==0]))) pars[["Rd"]] <- 
+        abs(dat$A[which(!is.na(dat$A[PARi==0]))][1]) 
+    pars[["Pgmax"]] <- max(dat$A,na.rm = TRUE) + pars[["Rd"]]
+    pars <- optim(par = pars,function(pars) sum(((dat$A) - 
+            ((pars[["Pgmax"]]*tanh(pars[["phi_I0"]]*dat$PARi/pars[["Pgmax"]])- 
+                pars[["Rd"]])))^2),control=list(fnscale=1))$par
+    try({
+      pars <- optim(par = pars,function(pars) sum(((dat$A) -
+                ((pars[["Pgmax"]]*tanh(pars[["phi_I0"]]*dat$PARi/
+                      pars[["Pgmax"]])-pars[["Rd"]])))^2),
+                          control=list(fnscale=1))$par
+    },silent = TRUE)
+    try({
+      mod <- nls(control = nls.control(maxiter = 1000),
+                 A~Pgmax*tanh(phi_I0*PARi/Pgmax)-Rd,data = dat,start = pars)
+      pars <- coef(mod)
+    },silent = TRUE)
+  }
+  
+  # Parameters to optimize
+  Pgmax <- pars[["Pgmax"]]
+  phi_I0 <- pars[["phi_I0"]]
+  Rd <- pars[["Rd"]]
+  
+  pred <- Pgmax*tanh(phi_I0*PARi/Pgmax)-Rd
+  Icomp <- atanh(Rd/Pgmax)*Pgmax/phi_I0
+  if(Icomp < 0) Icomp <- 0
+  # predicted values
+  if(return == "predict") return(pred)
+  
+  # Calculated quantities
+  x <- c(.05,.1,.15,.25,.5,.75,.85,.9,.95)
+  PARi_fine <- seq(0,6000,by = .1)
+  pred_fine <- Pgmax*tanh(phi_I0*PARi_fine/Pgmax)-Rd
+  Isat_x <- atanh((((Pgmax-Rd)*x)+Rd)/Pgmax)*Pgmax/phi_I0
+  phi_Icomp <- phi_I0*(1/cosh(phi_I0*Icomp/Pgmax))^2
+  lo_inds <- which(PARi_fine <= (max(PARi_fine)-50))
+  hi_inds <- lo_inds + (length(PARi_fine) - max(lo_inds))
+  
+  diffs <- (pred_fine[hi_inds] - pred_fine[lo_inds])
+  if(any(diffs <= .067)) Imax <- PARi_fine[which(diffs <= .067)[1]] else 
+    Imax <- max(PARi_fine)
+  
+  Pmax <- max(pred_fine)
+  P_Imax <- pred_fine[which.min(abs(Imax -PARi_fine))[1]]
+  I0_Icomp <- if(Icomp <= 0) I0_Icomp <- 1:2 else which(PARi_fine <= Icomp)   
+  Icomp_I200 <- which(PARi_fine >= Icomp & PARi_fine <= 200)
+  
+  
+  phi_I0_Icomp <- as.numeric(coef(lm(pred_fine[I0_Icomp] ~ 
+                                       PARi_fine[I0_Icomp]))[2])
+  phi_Icomp_I200 <- as.numeric(coef(lm(pred_fine[Icomp_I200] ~ 
+                                         PARi_fine[Icomp_I200]))[2])
+  
+  P2500 <- pred_fine[PARi_fine == 2500]
+  
+  Ix <- sapply(x,function(x){
+    ind_x <- which((pred_fine - (x*P2500))>0 & PARi_fine < 
+                     PARi_fine[which.max(pred_fine[PARi_fine <= 2500])])[1]
+    if(is.na(ind_x)) return(NA)
+    ind_x <- c((ind_x-1):(ind_x+1))
+    Ix_mod <- lm(y~x,data.frame(x=PARi_fine[ind_x],y=pred_fine[ind_x]))
+    (((x*P2500)-coef(Ix_mod)[[1]])/coef(Ix_mod)[[2]])
+  })
+  
+  calc <- c(Pgmax = Pgmax,
+            phi_I0 = phi_I0,
+            Rd = Rd,
+            Icomp = Icomp,
+            Isat_25 = Isat_x[x==.25],Isat_50 = Isat_x[x==.5],
+            Isat_75 = Isat_x[x==.75],Isat_85 = Isat_x[x==.85],
+            Isat_90 = Isat_x[x==.9],
+            Isat_95 = Isat_x[x==.95],
+            Psat_25 = .25*(Pgmax-Rd),Psat_50 = .5*(Pgmax-Rd),
+            Psat_75 = .75*(Pgmax-Rd),Psat_85 = .85*(Pgmax-Rd),
+            Psat_90 = .90*(Pgmax-Rd),
+            Psat_95 = .95*(Pgmax-Rd),
+            I5 = Ix[x==.05],I10 = Ix[x==.1],I15 = Ix[x==.15],
+            I25 = Ix[x==.25],I50 = Ix[x==.5],
+            I75 = Ix[x==.75],I85 = Ix[x==.85],
+            I90 = Ix[x==.9],
+            I95 = Ix[x==.95],
+            P25 = .25*Pgmax-Rd,P50 = .5*Pgmax-Rd,
+            P75 = .75*Pgmax-Rd,P85 = .85*Pgmax-Rd,
+            P90 = .90*Pgmax-Rd,
+            P95 = .95*Pgmax-Rd,
+            Imax = Imax,
+            Pmax = Pmax,
+            phi_Icomp = phi_Icomp,
+            phi_I0_Icomp = phi_I0_Icomp,
+            phi_Icomp_I200 = phi_Icomp_I200,
+            P_Imax = P_Imax,
+            Imax_obs = 2500,Pmax_obs = pred_fine[PARi_fine == 2500])
+  
+  if(return == "calc") return(calc)
+  fit <- c(r2 = cor(dat$A,pred,use = "pair")^2,
+           mse = mean((dat$A-pred)^2,na.rm = TRUE),list(pars = pars),
+           list(mod = mod))
+  
+  return(list(calc = calc,pred = pred,pred_fine = pred_fine,fit = fit))
+}
+
+# Hyperbolic Tangent Based Model (Abe et al. 2009)
+eq5 <- function(pars = 
+                  c(Pgmax = 15.5,Isat = 359.2,Rd = .9),
+                dat,
+                PARi = c(0, 50, 100, 250, 500, 1000, 1500, 2000, 2500),
+                return = c("predict","calc","all")[1])
+{
+  # Photosynthetic model
+  mod <- NULL
+  if(!missing(dat))
+  {
+    PARi <- dat$PARi
+    if(any(PARi==0)) if(any(!is.na(dat$A[PARi==0]))) pars[["Rd"]] <- 
+        abs(dat$A[which(!is.na(dat$A[PARi==0]))][1]) 
+    pars[["Pgmax"]] <- max(dat$A,na.rm = TRUE) + pars[["Rd"]]
+    pars <- optim(par = pars,function(pars) sum(((dat$A) - 
+               (pars[["Pgmax"]]*tanh(dat$PARi/pars[["Isat"]])-pars[["Rd"]]))^2),
+                  control=list(fnscale=1))$par
+    try(pars <- optim(par = pars,function(pars) sum(((dat$A) -
+                  (pars[["Pgmax"]]*tanh(dat$PARi/pars[["Isat"]]) - 
+                     pars[["Rd"]]))^2),control=list(fnscale=1),
+                      method="BFGS")$par,silent=TRUE)
+    try({
+      mod <- nls(control = nls.control(maxiter = 1000),
+                 A~Pgmax*tanh(PARi/Isat)-Rd,data = dat,start = pars)
+      pars <- coef(mod)
+    },silent=TRUE)
+  }
+  
+  # Parameters to optimize
+  Pgmax <- pars[["Pgmax"]]
+  Isat <- pars[["Isat"]]
+  Rd <- pars[["Rd"]]
+  
+  pred <- Pgmax*tanh(PARi/Isat)-Rd
+  Icomp <- Isat*atanh(Rd/Pgmax)
+  
+  # Predicted values
+  if(return == "predict") return(pred)
+  
+  # Calculated quantities
+  x <- c(.05,.1,.15,.25,.5,.75,.85,.9,.95)
+  PARi_fine <- seq(0,6000,by = .1)
+  pred_fine <- Pgmax*tanh(PARi_fine/Isat)-Rd
+  Isat_x <- atanh((((Pgmax-Rd)*x)+Rd)/Pgmax)*Isat
+  phi_I0 <- (Pgmax/Isat)*(1/cosh(0/Isat))^2
+  phi_Icomp <- (Pgmax/Isat)*(1/cosh(Icomp/Isat))^2
+  lo_inds <- which(PARi_fine <= (max(PARi_fine)-50))
+  hi_inds <- lo_inds + (length(PARi_fine) - max(lo_inds))
+  
+  diffs <- (pred_fine[hi_inds] - pred_fine[lo_inds])
+  if(any(diffs <= .067)) Imax <- PARi_fine[which(diffs <= .067)[1]] else 
+    Imax <- max(PARi_fine)
+  
+  Pmax <- max(pred_fine)
+  P_Imax <- pred_fine[which.min(abs(Imax-PARi_fine))[1]]
+  I0_Icomp <- if(Icomp <= 0) I0_Icomp <- 1:2 else which(PARi_fine <= Icomp)   
+  Icomp_I200 <- which(PARi_fine >= Icomp & PARi_fine <= 200)
+  
+  phi_I0_Icomp <- as.numeric(coef(lm(pred_fine[I0_Icomp] ~ 
+                                       PARi_fine[I0_Icomp]))[2])
+  phi_Icomp_I200 <- as.numeric(coef(lm(pred_fine[Icomp_I200] ~ 
+                                         PARi_fine[Icomp_I200]))[2])
+  
+  P2500 <- pred_fine[PARi_fine == 2500]
+  
+  Ix <- sapply(x,function(x){
+    ind_x <- which((pred_fine - (x*P2500))>0 & PARi_fine < 
+                     PARi_fine[which.max(pred_fine[PARi_fine <= 2500])])[1]
+    if(is.na(ind_x)) return(NA)
+    ind_x <- c((ind_x-1):(ind_x+1))
+    Ix_mod <- lm(y~x,data.frame(x=PARi_fine[ind_x],y=pred_fine[ind_x]))
+    (((x*P2500)-coef(Ix_mod)[[1]])/coef(Ix_mod)[[2]])
+  })
+  
+  calc <- c(Pgmax = Pgmax,
+            phi_I0 = phi_I0,
+            Rd = Rd,
+            Icomp = Icomp,
+            Isat_25 = Isat_x[x==.25],Isat_50 = Isat_x[x==.5],
+            Isat_75 = Isat_x[x==.75],Isat_85 = Isat_x[x==.85],
+            Isat_90 = Isat_x[x==.9],
+            Isat_95 = Isat_x[x==.95],
+            Psat_25 = .25*(Pgmax-Rd),Psat_50 = .5*(Pgmax-Rd),
+            Psat_75 = .75*(Pgmax-Rd),Psat_85 = .85*(Pgmax-Rd),
+            Psat_90 = .90*(Pgmax-Rd),
+            Psat_95 = .95*(Pgmax-Rd),
+            I5 = Ix[x==.05],I10 = Ix[x==.1],I15 = Ix[x==.15],
+            I25 = Ix[x==.25],I50 = Ix[x==.5],
+            I75 = Ix[x==.75],I85 = Ix[x==.85],
+            I90 = Ix[x==.9],
+            I95 = Ix[x==.95],
+            P25 = .25*Pgmax-Rd,P50 = .5*Pgmax-Rd,
+            P75 = .75*Pgmax-Rd,P85 = .85*Pgmax-Rd,
+            P90 = .90*Pgmax-Rd,
+            P95 = .95*Pgmax-Rd,
+            Imax = Imax,
+            Pmax = Pmax,
+            phi_Icomp = phi_Icomp,
+            phi_I0_Icomp = phi_I0_Icomp,
+            phi_Icomp_I200 = phi_Icomp_I200,
+            P_Imax = P_Imax,
+            Imax_obs = 2500,Pmax_obs = pred_fine[PARi_fine == 2500])
+  
+  if(return == "calc") return(calc)
+  fit <- c(r2 = cor(dat$A,pred,use = "pair")^2,
+           mse = mean((dat$A-pred)^2,na.rm = TRUE),list(pars = pars),
+           list(mod = mod))
+  
+  return(list(calc = calc,pred = pred,pred_fine = pred_fine,fit = fit))
+}
+
+# Non-rectangular hyperbola based model (Prioul & Chartier 1977)
+eq6 <- function(pars = 
+                  c(Pgmax = 15.5,phi_I0 = .0493,theta = .433,Rd = .9),
+                dat,
+                PARi = c(0, 50, 100, 250, 500, 1000, 1500, 2000, 2500),
+                return = c("predict","calc","all")[1])
+{
+  # Photosynthetic model
+  mod <- NULL
+  if(!missing(dat))
+  {
+    PARi <- dat$PARi
+    if(any(PARi==0)) if(any(!is.na(dat$A[PARi==0]))) pars[["Rd"]] <- 
+        abs(dat$A[which(!is.na(dat$A[PARi==0]))][1]) 
+    pars[["Pgmax"]] <- max(dat$A,na.rm = TRUE) + pars[["Rd"]]
+    
+    pars[["Rd"]] <- log(pars[["Rd"]])
+    
+    pars <- optim(par = pars,function(pars) sum(((dat$A) -
+              ((((dat$PARi*pars[["phi_I0"]]+pars[["Pgmax"]]) -
+               ((((pars[["phi_I0"]]*dat$PARi+pars[["Pgmax"]])^2) -
+                (4*pars[["phi_I0"]]*pars[["Pgmax"]]*pars[["theta"]]*
+                 dat$PARi))^0.5))/(2*pars[["theta"]]))-exp(pars[["Rd"]])))^2),
+                  control=list(fnscale=1))$par
+    try({ pars <- optim(par = pars,function(pars) sum(((dat$A) -
+         ((((dat$PARi*pars[["phi_I0"]]+pars[["Pgmax"]])-
+            ((((pars[["phi_I0"]]*dat$PARi+pars[["Pgmax"]])^2)-
+              (4*pars[["phi_I0"]]*pars[["Pgmax"]]*pars[["theta"]]*
+                  dat$PARi))^0.5))/(2*pars[["theta"]]))-exp(pars[["Rd"]])))^2),
+                    control=list(fnscale=1),
+                      method="BFGS")$par},silent = TRUE)
+    try({
+      mod <- nls(control = nls.control(maxiter = 1000),
+                A~(((PARi*phi_I0+Pgmax)-((((phi_I0*PARi+Pgmax)^2)-
+                      (4*phi_I0*Pgmax*theta*PARi))^0.5))/(2*theta))-exp(Rd),
+                data = dat,start = pars)
+      pars <- coef(mod)
+    },silent = TRUE)
+    pars[["Rd"]] <- exp(pars[["Rd"]])
+  }
+  
+  # parameters to optimize
+  Pgmax <- pars[["Pgmax"]]
+  phi_I0 <- pars[["phi_I0"]]
+  theta <- pars[["theta"]]
+  Rd <- pars[["Rd"]]
+  
+  pred <- (((PARi*phi_I0+Pgmax)-((((phi_I0*PARi+Pgmax)^2)-
+                              (4*phi_I0*Pgmax*theta*PARi))^0.5))/(2*theta))-Rd
+  Icomp <- (Rd*(theta*Rd-Pgmax))/(phi_I0*(Rd-Pgmax))
+  
+  # Predicted values
+  if(return == "predict") return(pred)
+  
+  # Calculated quantities
+  x <- c(.05,.1,.15,.25,.5,.75,.85,.9,.95)
+  PARi_fine <- seq(0,6000,by = .1)
+  pred_fine <- (((PARi_fine*phi_I0+Pgmax)-((((phi_I0*PARi_fine+Pgmax)^2)-
+                        (4*phi_I0*Pgmax*theta*PARi_fine))^0.5))/(2*theta))-Rd
+  Isat_x <- (Pgmax*(x*Pgmax+Rd*(1-x))-theta*(x*(Pgmax-Rd)+Rd)^2)/
+                (phi_I0*(Pgmax*(1-x)+Rd*(x-1)))
+  phi_Icomp <- (phi_I0/(2*theta))*(1-((phi_I0*Icomp+Pgmax-2*theta*Pgmax)/
+                  ((((phi_I0*Icomp+Pgmax)^2)-4*theta*phi_I0*Icomp*Pgmax)^0.5)))
+  lo_inds <- which(PARi_fine <= (max(PARi_fine)-50))
+  hi_inds <- lo_inds + (length(PARi_fine) - max(lo_inds))
+  
+  diffs <- (pred_fine[hi_inds] - pred_fine[lo_inds])
+  if(any(diffs <= .067)) Imax <- PARi_fine[which(diffs <= .067)[1]] else 
+    Imax <- max(PARi_fine)
+  
+  Pmax <- max(pred_fine)
+  P_Imax <- pred_fine[which.min(abs(Imax -PARi_fine))[1]]
+  I0_Icomp <- if(Icomp <= 0) I0_Icomp <- 1:2 else which(PARi_fine <= Icomp)   
+  Icomp_I200 <- which(PARi_fine >= Icomp & PARi_fine <= 200)
+  
+  phi_I0_Icomp <- as.numeric(coef(lm(pred_fine[I0_Icomp] ~ 
+                                       PARi_fine[I0_Icomp]))[2])
+  phi_Icomp_I200 <- as.numeric(coef(lm(pred_fine[Icomp_I200] ~ 
+                                         PARi_fine[Icomp_I200]))[2])
+  
+  P2500 <- pred_fine[PARi_fine == 2500]
+  
+  Ix <- sapply(x,function(x){
+    ind_x <- which((pred_fine - (x*P2500))>0 & PARi_fine < 
+                     PARi_fine[which.max(pred_fine[PARi_fine <= 2500])])[1]
+    if(is.na(ind_x)) return(NA)
+    ind_x <- c((ind_x-1):(ind_x+1))
+    Ix_mod <- lm(y~x,data.frame(x=PARi_fine[ind_x],y=pred_fine[ind_x]))
+    (((x*P2500)-coef(Ix_mod)[[1]])/coef(Ix_mod)[[2]])
+  })
+  
+  calc <- c(Pgmax = Pgmax,
+            phi_I0 = phi_I0,
+            Rd = Rd,
+            Icomp = Icomp,
+            Isat_25 = Isat_x[x==.25],Isat_50 = Isat_x[x==.5],
+            Isat_75 = Isat_x[x==.75],Isat_85 = Isat_x[x==.85],
+            Isat_90 = Isat_x[x==.9],
+            Isat_95 = Isat_x[x==.95],
+            Psat_25 = .25*(Pgmax-Rd),Psat_50 = .5*(Pgmax-Rd),
+            Psat_75 = .75*(Pgmax-Rd),Psat_85 = .85*(Pgmax-Rd),
+            Psat_90 = .90*(Pgmax-Rd),
+            Psat_95 = .95*(Pgmax-Rd),
+            I5 = Ix[x==.05],I10 = Ix[x==.1],I15 = Ix[x==.15],
+            I25 = Ix[x==.25],I50 = Ix[x==.5],
+            I75 = Ix[x==.75],I85 = Ix[x==.85],
+            I90 = Ix[x==.9],
+            I95 = Ix[x==.95],
+            P25 = .25*Pgmax-Rd,P50 = .5*Pgmax-Rd,
+            P75 = .75*Pgmax-Rd,P85 = .85*Pgmax-Rd,
+            P90 = .90*Pgmax-Rd,
+            P95 = .95*Pgmax-Rd,
+            Imax = Imax,
+            Pmax = Pmax,
+            phi_Icomp = phi_Icomp,
+            phi_I0_Icomp = phi_I0_Icomp,
+            phi_Icomp_I200 = phi_Icomp_I200,
+            P_Imax = P_Imax,
+            Imax_obs = 2500,Pmax_obs = pred_fine[PARi_fine == 2500],
+            theta = theta)
+  
+  if(return == "calc") return(calc)
+  fit <- c(r2 = cor(dat$A,pred,use = "pair")^2,
+           mse = mean((dat$A-pred)^2,na.rm = TRUE),list(pars = pars),list(mod = mod))
+  
+  return(list(calc = calc,pred = pred,pred_fine = pred_fine,fit = fit))
+}
+
+# Exponential based model (Webb et al. 1974)
+eq8 <- function(pars = 
+                  c(Pgmax = 16.2,phi_I0 = .0597,Rd = 1.3),
+                dat,
+                PARi = c(0, 50, 100, 250, 500, 1000, 1500, 2000, 2500),
+                return = c("predict","calc","all")[1])
+{ 
+  # Photosynthetic model
+  mod <- NULL
+  if(!missing(dat))
+  {
+    PARi <- dat$PARi
+    if(any(PARi==0)) if(any(!is.na(dat$A[PARi==0]))) pars[["Rd"]] <- 
+        abs(dat$A[which(!is.na(dat$A[PARi==0]))][1]) 
+    pars[["Pgmax"]] <- max(dat$A,na.rm = TRUE) + pars[["Rd"]]
+    
+    pars <- optim(par = pars,function(pars) sum(((dat$A) -
+              ((pars[["Pgmax"]]*(1-exp(-pars[["phi_I0"]]*dat$PARi/
+                  pars[["Pgmax"]])))-pars[["Rd"]]))^2),
+                    control=list(fnscale=1))$par
+    
+    try({
+      mod <- nls(control = nls.control(maxiter = 1000),
+              A~(Pgmax*(1-exp(-phi_I0*PARi/Pgmax)))-Rd, data = dat,start = pars)
+      pars <- coef(mod)
+    },silent = TRUE)
+  }
+  
+  # Parameters to optimize
+  Pgmax <- pars[["Pgmax"]]
+  phi_I0 <- pars[["phi_I0"]]
+  Rd <- pars[["Rd"]]
+  
+  pred <- (Pgmax*(1-exp(-phi_I0*PARi/Pgmax)))-Rd
+  
+  # Predicted values
+  if(return == "predict") return(pred)
+  
+  Icomp <- (Pgmax/phi_I0)*(-log(1-Rd/Pgmax))
+  
+  # calculated quantities
+  x <- c(.05,.1,.15,.25,.5,.75,.85,.9,.95)
+  PARi_fine <- seq(0,6000,by = .1)
+  pred_fine <- (Pgmax*(1-exp(-phi_I0*PARi_fine/Pgmax)))-Rd
+  Isat_x <- (Pgmax/phi_I0)*(-log(1-(x*(Pgmax-Rd)+Rd)/Pgmax))
+  phi_Icomp <- phi_I0*exp(-phi_I0*Icomp/Pgmax)
+  lo_inds <- which(PARi_fine <= (max(PARi_fine)-50))
+  hi_inds <- lo_inds + (length(PARi_fine) - max(lo_inds))
+  
+  diffs <- (pred_fine[hi_inds] - pred_fine[lo_inds])
+  if(any(diffs <= .067)) Imax <- PARi_fine[which(diffs <= .067)[1]] else 
+    Imax <- max(PARi_fine)
+  
+  Pmax <- max(pred_fine)
+  P_Imax <- pred_fine[which.min(abs(Imax -PARi_fine))[1]]
+  I0_Icomp <- if(Icomp <= 0) I0_Icomp <- 1:2 else which(PARi_fine <= Icomp)   
+  Icomp_I200 <- which(PARi_fine >= Icomp & PARi_fine <= 200)
+  
+  phi_I0_Icomp <- as.numeric(coef(lm(pred_fine[I0_Icomp] ~ 
+                                       PARi_fine[I0_Icomp]))[2])
+  phi_Icomp_I200 <- as.numeric(coef(lm(pred_fine[Icomp_I200] ~ 
+                                         PARi_fine[Icomp_I200]))[2])
+  
+  P2500 <- pred_fine[PARi_fine == 2500]
+  
+  Ix <- sapply(x,function(x){
+    ind_x <- which((pred_fine - (x*P2500))>0 & PARi_fine < 
+                     PARi_fine[which.max(pred_fine[PARi_fine <= 2500])])[1]
+    if(is.na(ind_x)) return(NA)
+    ind_x <- c((ind_x-1):(ind_x+1))
+    Ix_mod <- lm(y~x,data.frame(x=PARi_fine[ind_x],y=pred_fine[ind_x]))
+    (((x*P2500)-coef(Ix_mod)[[1]])/coef(Ix_mod)[[2]])
+  })
+  
+  calc <- c(Pgmax = Pgmax,
+            phi_I0 = phi_I0,
+            Rd = Rd,
+            Icomp = Icomp,
+            Isat_25 = Isat_x[x==.25],Isat_50 = Isat_x[x==.5],
+            Isat_75 = Isat_x[x==.75],Isat_85 = Isat_x[x==.85],
+            Isat_90 = Isat_x[x==.9],
+            Isat_95 = Isat_x[x==.95],
+            Psat_25 = .25*(Pgmax-Rd),Psat_50 = .5*(Pgmax-Rd),
+            Psat_75 = .75*(Pgmax-Rd),Psat_85 = .85*(Pgmax-Rd),
+            Psat_90 = .90*(Pgmax-Rd),
+            Psat_95 = .95*(Pgmax-Rd),
+            I5 = Ix[x==.05],I10 = Ix[x==.1],I15 = Ix[x==.15],
+            I25 = Ix[x==.25],I50 = Ix[x==.5],
+            I75 = Ix[x==.75],I85 = Ix[x==.85],
+            I90 = Ix[x==.9],
+            I95 = Ix[x==.95],
+            P25 = .25*Pgmax-Rd,P50 = .5*Pgmax-Rd,
+            P75 = .75*Pgmax-Rd,P85 = .85*Pgmax-Rd,
+            P90 = .90*Pgmax-Rd,
+            P95 = .95*Pgmax-Rd,
+            Imax = Imax,
+            Pmax = Pmax,
+            phi_Icomp = phi_Icomp,
+            phi_I0_Icomp = phi_I0_Icomp,
+            phi_Icomp_I200 = phi_Icomp_I200,
+            P_Imax = P_Imax,
+            Imax_obs = 2500,Pmax_obs = pred_fine[PARi_fine == 2500])
+  
+  if(return == "calc") return(calc)
+  fit <- c(r2 = cor(dat$A,pred,use = "pair")^2,
+           mse = mean((dat$A-pred)^2,na.rm = TRUE),list(pars = pars),
+           list(mod = mod))
+  
+  return(list(calc = calc,pred = pred,pred_fine = pred_fine,fit = fit))
+}
+
+# Exponential based model (Prado & de Moraes 1997)
+eq9 <- function(pars = 
+                  c(Pgmax = 22,Icomp = 10,k = .0015,Rd = .1),
+                dat,
+                PARi = c(0, 50, 100, 250, 500, 1000, 1500, 2000, 2500),
+                return = c("predict","calc","all")[1]
+)
+{ 
+  # Photosynthetic model 
+  mod <- NULL
+  if(!missing(dat))
+  {
+    PARi <- dat$PARi
+    if(any(PARi==0)) if(any(!is.na(dat$A[PARi==0]))) pars[["Rd"]] <- 
+        abs(dat$A[which(!is.na(dat$A[PARi==0]))][1]) 
+    pars[["Pgmax"]] <- max(dat$A,na.rm = TRUE) + pars[["Rd"]]
+    pars <- optim(par = pars,function(pars) sum(((dat$A) -
+            (pars[["Pgmax"]]*(1-exp(-pars[["k"]]*(dat$PARi-pars[["Icomp"]])))-
+               (pars[["Rd"]])))^2),control=list(fnscale=1))$par
+    try({ pars <- optim(par = pars,function(pars) sum(((dat$A) - 
+                    (pars[["Pgmax"]]*(1-exp(-pars[["k"]]*(dat$PARi-
+                        pars[["Icomp"]]))) - (pars[["Rd"]])))^2),
+                  control=list(fnscale=1),method = "BFGS")$par },silent = TRUE)
+    pars <- optim(par = pars,function(pars) sum(((dat$A) -
+              (pars[["Pgmax"]]*(1-exp(-pars[["k"]]*(dat$PARi-pars[["Icomp"]])))-
+                 (pars[["Rd"]])))^2),control=list(fnscale=1))$par
+    pars <- optim(par = pars,function(pars) sum(((dat$A) -
+              (pars[["Pgmax"]]*(1-exp(-pars[["k"]]*(dat$PARi-pars[["Icomp"]])))-
+                 (pars[["Rd"]])))^2),control=list(fnscale=1))$par
+
+    try({
+      mod <- nls(control = nls.control(maxiter = 1000),formula = A ~
+                   Pgmax*(1-exp(-k*(PARi-Icomp)))-Rd,
+                 data = dat,
+                 start = pars,
+                 lower = c(Pgmax=5,Icomp=5,k=.0001,Rd=0),
+                 upper = c(Pgmax=60,Icomp=150,k=.02,Rd=5),
+                 algorithm = "port")
+      pars <- coef(mod)
+      
+    },silent = TRUE)
+  }
+  
+  # Parameters to optimize
+  Pgmax <- pars[["Pgmax"]]
+  Icomp <- pars[["Icomp"]]
+  Rd <- pars[["Rd"]]
+  k <- pars[["k"]]
+  
+  pred <- Pgmax*(1-exp(-k*(PARi-Icomp)))-Rd
+  
+  # Predicted values
+  if(return == "predict") return(pred)
+  
+  # Calculated quantities
+  x <- c(.05,.1,.15,.25,.5,.75,.85,.9,.95)
+  PARi_fine <- seq(0,6000,by = .1)
+  pred_fine <- Pgmax*(1-exp(-k*(PARi_fine-Icomp)))-Rd
+  Isat_x <- Icomp-(log(1-((x*(Pgmax-Rd)+Rd)/Pgmax)))/k
+  phi_I0 <- Pgmax*k*exp(-k*(Icomp))
+  phi_Icomp <- Pgmax*k*exp(-k*(Icomp-Icomp))
+  lo_inds <- which(PARi_fine <= (max(PARi_fine)-50))
+  hi_inds <- lo_inds + (length(PARi_fine) - max(lo_inds))
+  
+  diffs <- (pred_fine[hi_inds] - pred_fine[lo_inds])
+  if(any(diffs <= .067)) Imax <- PARi_fine[which(diffs <= .067)[1]] else Imax <- max(PARi_fine)
+  
+  Pmax <- max(pred_fine)
+  P_Imax <- pred_fine[which.min(abs(Imax -PARi_fine))[1]]
+  I0_Icomp <- if(Icomp <= 0) I0_Icomp <- 1:2 else which(PARi_fine <= Icomp)   
+  Icomp_I200 <- which(PARi_fine >= Icomp & PARi_fine <= 200)
+  
+  phi_I0_Icomp <- as.numeric(coef(lm(pred_fine[I0_Icomp] ~ PARi_fine[I0_Icomp]))[2])
+  phi_Icomp_I200 <- as.numeric(coef(lm(pred_fine[Icomp_I200] ~ PARi_fine[Icomp_I200]))[2])
+  
+  P2500 <- pred_fine[PARi_fine == 2500]
+  
+  Ix <- sapply(x,function(x){
+    ind_x <- which((pred_fine - (x*P2500))>0 & PARi_fine < PARi_fine[which.max(pred_fine[PARi_fine <= 2500])])[1]
+    if(is.na(ind_x)) return(NA)
+    ind_x <- c((ind_x-1):(ind_x+1))
+    Ix_mod <- lm(y~x,data.frame(x=PARi_fine[ind_x],y=pred_fine[ind_x]))
+    (((x*P2500)-coef(Ix_mod)[[1]])/coef(Ix_mod)[[2]])
+  })
+  
+  calc <- c(Pgmax = Pgmax,
+            phi_I0 = phi_I0,
+            Rd = Rd,
+            Icomp = Icomp,
+            Isat_25 = Isat_x[x==.25],Isat_50 = Isat_x[x==.5],
+            Isat_75 = Isat_x[x==.75],Isat_85 = Isat_x[x==.85],
+            Isat_90 = Isat_x[x==.9],
+            Isat_95 = Isat_x[x==.95],
+            Psat_25 = .25*(Pgmax-Rd),Psat_50 = .5*(Pgmax-Rd),
+            Psat_75 = .75*(Pgmax-Rd),Psat_85 = .85*(Pgmax-Rd),
+            Psat_90 = .90*(Pgmax-Rd),
+            Psat_95 = .95*(Pgmax-Rd),
+            I5 = Ix[x==.05],I10 = Ix[x==.1],I15 = Ix[x==.15],
+            I25 = Ix[x==.25],I50 = Ix[x==.5],
+            I75 = Ix[x==.75],I85 = Ix[x==.85],
+            I90 = Ix[x==.9],
+            I95 = Ix[x==.95],
+            P25 = .25*Pgmax-Rd,P50 = .5*Pgmax-Rd,
+            P75 = .75*Pgmax-Rd,P85 = .85*Pgmax-Rd,
+            P90 = .90*Pgmax-Rd,
+            P95 = .95*Pgmax-Rd,
+            Imax = Imax,
+            Pmax = Pmax,
+            phi_Icomp = phi_Icomp,
+            phi_I0_Icomp = phi_I0_Icomp,
+            phi_Icomp_I200 = phi_Icomp_I200,
+            P_Imax = P_Imax,
+            Imax_obs = 2500,Pmax_obs = pred_fine[PARi_fine == 2500],
+            k = k)
+  
+  if(return == "calc") return(calc)
+  
+  fit <- c(r2 = cor(dat$A,pred,use = "pair")^2,
+           mse = mean((dat$A-pred)^2,na.rm = TRUE),list(pars = pars),
+           list(mod = mod))
+  
+  return(list(calc = calc,pred = pred,pred_fine = pred_fine,fit = fit))
+}
+
+# Ye model (Ye 2007)
+eq11 <- function(pars = 
+                   c(phi_I0_Icomp = .0756,beta = .0000432,
+                     gamma = .0039,Icomp = 22.6),
+                 dat,
+                 PARi = c(0, 50, 100, 250, 500, 1000, 1500, 2000, 2500),
+                 return = c("predict","calc","all")[1])
+{ 
+  # Photosynthetic model
+  mod <- NULL
+  if(!missing(dat))
+  {
+    try({
+      mod <- nls(control = nls.control(maxiter = 1000),
+                 A~phi_I0_Icomp*((1-beta*PARi)/(1+gamma*PARi))*(PARi-Icomp),
+                 data = dat,start = pars,lower = c(phi_I0_Icomp = .01,
+                 beta = 1e-5,gamma = 1e-5,Icomp = 5),
+                 upper = c(phi_I0_Icomp = .2,beta = 1,gamma = 1,Icomp = 150),
+                 algorithm = "port")
+      pars <- coef(mod)
+    },silent = TRUE)
+    
+    pars[["beta"]] <- log(pars[["beta"]])
+    pars[["gamma"]] <- log(pars[["gamma"]])
+    
+    try({
+      mod <- nls(control = nls.control(maxiter = 1000),A ~ 
+                   phi_I0_Icomp*((1-exp(beta)*PARi)/(1+exp(gamma)*PARi))*
+                   (PARi-Icomp),data = dat,start = pars)
+      pars <- coef(mod)
+    },silent = TRUE)
+    
+    PARi <- dat$PARi
+    if(!any(dat$PARi==0))
+    {
+      I0 <- coef(lm(A~PARi,data = dat[order(dat$PARi)[1:2],]))[1]
+      if(I0<0) pars[["Icomp"]] <- approx(x = c(I0,dat$A),y = c(0,dat$PARi),
+                                         xout = 0)$y
+    } else
+    {
+      I0 <- coef(lm(A~PARi,data = dat[order(dat$PARi)[1:2],]))[1]
+      pars[["Icomp"]] <- approx(x = dat$A,y = dat$PARi,xout = 0)$y
+    }
+    
+    pars[["phi_I0_Icomp"]] <- abs(I0) / pars[["Icomp"]]
+    pars <- optim(par = pars,function(pars) sum(((dat$A) - 
+            (pars[["phi_I0_Icomp"]]*((1-exp(pars[["beta"]])*dat$PARi)/
+            (1+exp(pars[["gamma"]])*dat$PARi))*(dat$PARi-pars[["Icomp"]])))^2),
+            control=list(fnscale=1))$par
+    try({ pars <- optim(par = pars,function(pars) sum(((dat$A) -
+                  (pars[["phi_I0_Icomp"]]*((1-exp(pars[["beta"]])*dat$PARi)/
+            (1+exp(pars[["gamma"]])*dat$PARi))*(dat$PARi-pars[["Icomp"]])))^2),
+            control=list(fnscale=1),method = "BFGS")$par },silent = TRUE)
+    
+    try({
+      mod <- nls(control = nls.control(maxiter = 1000),
+                 A ~ phi_I0_Icomp*((1-exp(beta)*PARi)/(1+exp(gamma)*PARi))*
+                   (PARi-Icomp),data = dat,start = pars)
+      pars <- coef(mod)
+    },silent = TRUE)
+    
+    pars[["beta"]] <- exp(pars[["beta"]])
+    pars[["gamma"]] <- exp(pars[["gamma"]])
+    
+    try({
+      mod <- nls(control = nls.control(maxiter = 1000),
+                 A~phi_I0_Icomp*((1-beta*PARi)/(1+gamma*PARi))*(PARi-Icomp),
+                 data = dat,start = pars,lower = c(phi_I0_Icomp = .01,
+                 beta = 1e-32,gamma = 1e-32,Icomp = 5),
+                 upper = c(phi_I0_Icomp = .2,beta = 1,gamma = 1,Icomp = 150),
+                 algorithm = "port")
+      pars <- coef(mod)
+    },silent = TRUE)
+  }
+  
+  # Parameters to optimize
+  phi_I0_Icomp <- pars[["phi_I0_Icomp"]]
+  Icomp <- pars[["Icomp"]]
+  beta <- pars[["beta"]]
+  gamma <- pars[["gamma"]]
+  
+  pred <- phi_I0_Icomp*((1-beta*PARi)/(1+gamma*PARi))*(PARi-Icomp)
+  
+  # Predicted values
+  if(return == "predict") return(pred)
+  
+  # Calculated quantities
+  x <- c(.05,.1,.15,.25,.5,.75,.85,.9,.95)
+  PARi_fine <- seq(0,6000,by = .1)
+  pred_fine <- phi_I0_Icomp*((1-beta*PARi_fine)/
+                               (1+gamma*PARi_fine))*(PARi_fine-Icomp)
+  Isat <- ((((beta+gamma)*(1+gamma*Icomp)/beta)^0.5)-1)/gamma
+  Rd <- phi_I0_Icomp*Icomp
+  Pgmax <- phi_I0_Icomp*((1-beta*Isat)/(1+gamma*Isat))*(Isat-Icomp)+Rd
+  Isat_x <- (((phi_I0_Icomp*beta*Icomp)-(x*(Pgmax-Rd)*gamma)+phi_I0_Icomp)-
+               (((x*(Pgmax-Rd)*gamma)-(phi_I0_Icomp*beta*Icomp)-phi_I0_Icomp)^2-
+                  (4*phi_I0_Icomp*beta*(phi_I0_Icomp*Icomp+x*(Pgmax-Rd))))^0.5)/
+                    (2*phi_I0_Icomp*beta)
+  phi_Icomp <- phi_I0_Icomp*((1-2*beta*Icomp-beta*gamma*(Icomp^2)+
+                                (gamma+beta)*Icomp)/(1+gamma*Icomp)^2)
+  phi_I0 <- phi_I0_Icomp*((1-2*beta*0-beta*gamma*(0^2)+(gamma+beta)*0)/
+                            (1+gamma*0)^2)
+  lo_inds <- which(PARi_fine <= (max(PARi_fine)-50))
+  hi_inds <- lo_inds + (length(PARi_fine) - max(lo_inds))
+  
+  diffs <- (pred_fine[hi_inds] - pred_fine[lo_inds])
+  if(any(diffs <= .067)) Imax <- PARi_fine[which(diffs <= .067)[1]] else 
+    Imax <- max(PARi_fine)
+  
+  Pmax <- max(pred_fine)
+  P_Imax <- pred_fine[which.min(abs(Imax -PARi_fine))[1]]
+  I0_Icomp <- if(Icomp <= 0) I0_Icomp <- 1:2 else which(PARi_fine <= Icomp)   
+  Icomp_I200 <- which(PARi_fine >= Icomp & PARi_fine <= 200)
+  
+  phi_I0_Icomp <- as.numeric(coef(lm(pred_fine[I0_Icomp] ~ 
+                                       PARi_fine[I0_Icomp]))[2])
+  phi_Icomp_I200 <- as.numeric(coef(lm(pred_fine[Icomp_I200] ~ 
+                                         PARi_fine[Icomp_I200]))[2])
+  
+  P2500 <- pred_fine[PARi_fine == 2500]
+  
+  Ix <- sapply(x,function(x){
+    ind_x <- which((pred_fine - (x*P2500))>0 & PARi_fine < 
+                     PARi_fine[which.max(pred_fine[PARi_fine <= 2500])])[1]
+    if(is.na(ind_x)) return(NA)
+    ind_x <- c((ind_x-1):(ind_x+1))
+    Ix_mod <- lm(y~x,data.frame(x=PARi_fine[ind_x],y=pred_fine[ind_x]))
+    (((x*P2500)-coef(Ix_mod)[[1]])/coef(Ix_mod)[[2]])
+  })
+  
+  calc <- c(Pgmax = Pgmax,
+            phi_I0 = phi_I0,
+            Rd = Rd,
+            Icomp = Icomp,
+            Isat_25 = Isat_x[x==.25],Isat_50 = Isat_x[x==.5],
+            Isat_75 = Isat_x[x==.75],Isat_85 = Isat_x[x==.85],
+            Isat_90 = Isat_x[x==.9],
+            Isat_95 = Isat_x[x==.95],
+            Psat_25 = .25*(Pgmax-Rd),Psat_50 = .5*(Pgmax-Rd),
+            Psat_75 = .75*(Pgmax-Rd),Psat_85 = .85*(Pgmax-Rd),
+            Psat_90 = .90*(Pgmax-Rd),
+            Psat_95 = .95*(Pgmax-Rd),
+            I5 = Ix[x==.05],I10 = Ix[x==.1],I15 = Ix[x==.15],
+            I25 = Ix[x==.25],I50 = Ix[x==.5],
+            I75 = Ix[x==.75],I85 = Ix[x==.85],
+            I90 = Ix[x==.9],
+            I95 = Ix[x==.95],
+            P25 = .25*Pgmax-Rd,P50 = .5*Pgmax-Rd,
+            P75 = .75*Pgmax-Rd,P85 = .85*Pgmax-Rd,
+            P90 = .90*Pgmax-Rd,
+            P95 = .95*Pgmax-Rd,
+            Imax = Imax,
+            Pmax = Pmax,
+            phi_Icomp = phi_Icomp,
+            phi_I0_Icomp = phi_I0_Icomp,
+            phi_Icomp_I200 = phi_Icomp_I200,
+            P_Imax = P_Imax,
+            Imax_obs = 2500,Pmax_obs = pred_fine[PARi_fine == 2500],
+            beta = beta,
+            gamma = gamma)
+  
+  fit <- c(r2 = cor(dat$A,pred,use = "pair")^2,
+           mse = mean((dat$A-pred)^2,na.rm = TRUE),list(pars = pars),
+           list(mod = mod))
+  
+  
+  if(return == "calc") return(calc)
+  
+  return(list(calc = calc,pred = pred,pred_fine = pred_fine,fit = fit))
+}
+```
+
+Results and model fits for photosynthetic functions 
+```{r}
+# Store LRC equation names
+eqs <- paste("eq",c(1,2,3,4,5,6,8,9,11),sep = "") 
+
+# Store parameter names
+par_names <- c(names(eq9(return = "calc")),"beta","gamma","theta","Isat")
+
+# Initialize NLS curve objects
+fitted_curves <- setNames(vector("list",length = length(eqs)),eqs)
+fitted_curves <- lapply(fitted_curves,function(X) setNames(vector("list",
+                                                  length = length(inds)),inds))
+# Initialize an object for NLS curve fits
+nls_fits <- curve_derived_results <- nls_fits_sp <- curve_derived_results_sp <- 
+  setNames(vector("list",length = length(eqs)),eqs)
+
+# Create an array of results 
+res <- array(dim = c(9,length(par_names)+length(PARi)*2,length(inds)))
+dimnames(res) <- list(paste("eq",c(1:6,8:9,11),sep = ""),c(par_names,
+                paste("PAR_",PARi,sep=""),paste("obs_PAR_",PARi,sep="")),inds)
+mse <- r2 <- matrix(NA,nrow = length(inds),ncol = 9,dimnames = list(inds,eqs))
+
+# Loop through all equations to store all results 
+for(e in 1:9)
+{
+  for(i in 1:length(inds))
+  {
+    # Load data into res array
+    try({
+      out <- get(eqs[e])(dat = dat[dat$SpeciesRepDate==inds[i],],return = "all")
+      fitted_curves[[e]][[inds[i]]] <- out
+      res[e,,i] <- c(out$calc[par_names],
+                     out$pred_fine[which(PARi_fine %in% PARi)],
+                     unlist(dat_wide[dat_wide$SpeciesRepDate == inds[i],
+                                     paste("PARi_",PARi,sep = "")]))
+      r2[i,e] <- out$fit[["r2"]]
+      mse[i,e] <- out$fit[["mse"]]
+    },silent = TRUE)
+  }
+  # Isolate NLS fits and parameters
+  nls_fits[[eqs[e]]] <- data.frame(species = ind_species,SpeciesRepDate = inds,
+                                   mse = mse[,e],r2 = r2[,e],
+                                   t(sapply(fitted_curves[[e]],
+                                            function(X) X$fit$pars)))
+  curve_derived_results[[eqs[e]]] <- data.frame(species = ind_species,
+                                                SpeciesRepDate = inds,
+                                                t(res[e,,]))
+  # Determine species mean values
+  nls_fits_sp[[eqs[e]]] <- Rphylopars:::convert_to_means(
+    nls_fits[[eqs[e]]][,-which(colnames(nls_fits[[eqs[e]]])=="SpeciesRepDate")])
+  curve_derived_results_sp[[eqs[e]]] <-
+    Rphylopars:::convert_to_means(curve_derived_results[[eqs[e]]][,
+          -which(colnames(curve_derived_results[[eqs[e]]])=="SpeciesRepDate")])
+
+# Save results   
+write.xlsx(x = nls_fits[[eqs[e]]],file = "final_results/nls_fits.xlsx",
+           sheetName = eqs[e],append = e>1,row.names = FALSE)
+write.xlsx(x = curve_derived_results[[eqs[e]]],
+           file = "final_results/curve_derived_results.xlsx",
+           sheetName = eqs[e],append = e>1,row.names = FALSE)
+write.xlsx(x = nls_fits_sp[[eqs[e]]],
+           file = "final_results/nls_fits_species_means.xlsx",
+           sheetName = eqs[e],append = e>1,row.names = FALSE)
+write.xlsx(x = curve_derived_results_sp[[eqs[e]]],
+           file = "final_results/curve_derived_results_species_means.xlsx",
+           sheetName = eqs[e],append = e>1,row.names = FALSE)
+}
+```
+    
+Phylogenetic signal and evolutionary models of univariate traits 
+Note: this code chunk takes about 20 minutes to run. 
+```{r}
+# Create named lists to store evolutionary models and the curve-derived results for each equation and parameter
+univariate_evo_mods <- setNames(vector("list",length = length(eqs)),eqs)
+mod_pars <- colnames(curve_derived_results[[eqs[e]]])[-which(c("species",
+                  "SpeciesRepDate") %in% colnames(curve_derived_results[[e]]))]
+par_list <- setNames(vector("list",length = length(mod_pars)),mod_pars)
+
+# Initialize evolutionary model and the null model as lists for each parameter in each equation
+univariate_evo_mods <- univariate_null_mods <- lapply(univariate_evo_mods,function(X) par_list)
+univariate_evo_mods_results <- setNames(vector("list",length = length(eqs)),eqs)
+
+# Initialize the result data frame for each equation with columns for trait and model statistics
+univariate_evo_mods_results <- lapply(univariate_evo_mods_results,
+                                 function(X) data.frame(trait = mod_pars,
+                                                        lambda = NA,
+                                                        null_loglik = NA,
+                                                        alt_loglik = NA,
+                                                        chisq = NA,
+                                                        pval = NA,
+                                                        inter_var = NA,
+                                                        intra_var = NA,
+                                                        prop_phylo_var = NA))
+
+# Loop through each equation
+for(e in 1:length(eqs))
+{
+
+  cat("Beginning equation",e,"\n")
+  for(i in 1:length(mod_pars))
+  {
+    if(length(unique(curve_derived_results[[eqs[e]]][[mod_pars[i]]])) == 1) next
+    # Extract data for the species and the current trait/parameter
+    mod_dat <- curve_derived_results[[eqs[e]]][c("species",mod_pars[i])]
+    # Fit the evolutionary model assuming a lambda model
+    univariate_evo_mods[[eqs[e]]][[mod_pars[i]]] <- phylopars(trait_data = mod_dat,tree = tree,model = 'lambda')
+    # Fit the null model assuming a star phylogeny
+    univariate_null_mods[[eqs[e]]][[mod_pars[i]]] <- phylopars(trait_data = mod_dat,tree = tree,model = 'star')
+    
+    # Extract the fitted models for easier reference
+    alt_mod <- univariate_evo_mods[[eqs[e]]][[mod_pars[i]]]
+    null_mod <- univariate_null_mods[[eqs[e]]][[mod_pars[i]]]
+    
+    # Calculate log-likelihood for both models
+    alt <- logLik(alt_mod)[[1]]
+    null <- logLik(null_mod)[[1]]
+    
+    # Chi-squared test to compare alt and null models
+    chi_square <- as.double(2*(alt - null)) 
+    pval <- pchisq(q = chi_square,df = 1,lower.tail = FALSE)
+    
+    # Store the results
+    univariate_evo_mods_results[[eqs[e]]][which(mod_pars[i] == univariate_evo_mods_results[[eqs[e]]]$trait),-1] <- 
+      c(lambda = round(alt_mod$model$lambda,2),
+      null_loglik = null,
+      alt_loglik = alt,
+      chisq = chi_square,
+      pval = round(pval,3),
+      inter_var = alt_mod$pars[[1]][1,1],
+      intra_var = alt_mod$pars[[2]][1,1],
+      prop_phylo_var = round(alt_mod$pars[[1]][1,1] / (alt_mod$pars[[1]][1,1] + alt_mod$pars[[2]][1,1]),2))
+  }
+  
+# Save the results in excel   
+  write.xlsx(x = univariate_evo_mods_results[[e]],file = "final_results/univariate_evo_mods_results.xlsx",sheetName = eqs[e],append = e > 1)
+  cat("completed\n\n")
+}
+```
+    
+Extract parameter values, fits, and phylogenetic signal in core traits  
+Note: this code chunk takes about 30 minutes to run. 
+```{r}
+# Create folder to store results 
+ifelse(!dir.exists("results"), dir.create("results"), "Folder exists already") 
+
+# Extract relevant columns for physiological (trait-based) and curve-derived parameters
+plant_phys_pars <- res[,c("Pmax_obs","Icomp","phi_Icomp","Rd"),]
+plant_curve_pars <- res[,c("Pmax_obs","I15","I25","I85","I95"),]
+
+t(plant_phys_pars["eq6",,])
+t(plant_curve_pars["eq6",,])
+
+# Get equation names from res
+eqs <- dimnames(res)[[1]]
+
+# Define discrete lambda values 
+lambdas <- c(.001,seq(.05,.95,by = .05),.999)
+lambda_list <- setNames(vector("list",length = length(lambdas)),lambdas)
+
+# Load saved results 
+success <- try(expr = {
+  suppressWarnings(load(file = "results/plant_phys_pars_mods.RData"))
+  suppressWarnings(load(file = "results/plant_curve_pars_mods.RData"))
+},silent = TRUE)
+
+# If loading fails (i.e., files don't exist), initialize model lists
+if(inherits(success,"try-error"))
+{
+  plant_phys_pars_mods <- setNames(vector("list",length = length(eqs)),eqs)
+  plant_curve_pars_mods <- setNames(vector("list",length = length(eqs)),eqs)
+  
+  plant_curve_pars_mods <- plant_phys_pars_mods <- lapply(plant_phys_pars_mods,function(X) lambda_list)
+  
+# Transform the tree according to each lambda value, setting the first tree as the star phylogeny and the last tree as the published phylogeny
+  trees <- lapply(lambdas,function(lambda) phylolm::transf.branch.lengths(tree,model = 'lambda',parameters = list(lambda = lambda))$tree)
+  trees[[1]] <- multi2di(phytools::starTree(tree$tip.label,branch.lengths = rep(1,length(tree$tip.label))),random = FALSE)
+  trees[[length(trees)]] <- tree
+  
+  # Iterate over equations and lambdas
+  for(i in 1:length(eqs))
+  {
+    cat(i," ") # Display progress
+    
+    # Create a data frame for plant physiological parameters of the current equation
+    plant_phys_pars_dat <- data.frame(species = ind_species,t(plant_phys_pars[eqs[i],,]),row.names = NULL)
+    temps <- vector("list",length(trees))
+    
+     # Fit the phylogenetic model with trait-based parameters for the current equation
+    temp <- phylopars(trait_data = plant_phys_pars_dat,tree = tree)
+    
+     # Fit the model for each tree across lambda sequence 
+    for(l in length(lambdas):1)
+    {
+      cat(l," ")
+    
+      temp <- phylopars(trait_data = plant_phys_pars_dat,tree = trees[[l]],phylocov_start = temp$pars[[1]],phenocov_start = temp$pars[[2]])
+      plant_phys_pars_mods[[eqs[i]]][[as.character(lambdas[l])]] <- temp
+    }
+    
+    # Create a data frame for curve-derived parameters of the current equation
+    plant_curve_pars_dat <- data.frame(species = ind_species,t(plant_curve_pars[eqs[i],,]),row.names = NULL)
+    temps <- vector("list",length(trees))
+    # Fit the phylogenetic model for curve parameters
+    temp <- phylopars(trait_data = plant_curve_pars_dat,tree = tree)
+    # Fit the model for each tree across lambda sequences
+    for(l in length(lambdas):1)
+    {
+      cat(l," ")
+      temp <- phylopars(trait_data = plant_curve_pars_dat,tree = trees[[l]],phylocov_start = temp$pars[[1]],phenocov_start = temp$pars[[2]])
+      plant_curve_pars_mods[[eqs[i]]][[as.character(lambdas[l])]] <- temp # Store model results
+    }
+    cat("completed\n\n")
+  }
+ # Save the fitted models  
+  save(plant_phys_pars_mods,file = "results/plant_phys_pars_mods.RData")
+  save(plant_curve_pars_mods,file = "results/plant_curve_pars_mods.RData")
+}
+
+# Try loading previously saved fit results for physiological (trait-based) and curve-based parameters models
+success <- try(expr = {
+  suppressWarnings(load(file = "results/plant_phys_pars_mods_fit.RData"))
+  suppressWarnings(load(file = "results/plant_curve_pars_mods_fit.RData"))
+},silent = TRUE)
+
+# If loading fails, initialize fit model lists
+if(inherits(success,"try-error"))
+{
+  # Create empty lists for each equation to store the fitted models
+  plant_phys_pars_mods_fit <- setNames(vector("list",length = length(eqs)),eqs)
+  plant_curve_pars_mods_fit <- setNames(vector("list",length = length(eqs)),eqs)
+  
+  # Fit lambda models for each equation
+  for(i in 1:length(eqs))
+  {
+    cat(i," ")
+    
+    # Find the lambda with the maximum log-likelihood for trait-based (phys) parameters
+    lls <- sapply(plant_phys_pars_mods[[eqs[i]]],function(X) logLik(X)[[1]])
+    temp <- plant_phys_pars_mods[[eqs[i]]][[which.max(lls)]]
+    
+    # Refit the model using the lambda that maximizes the log-likelihood
+    if(which.max(lls) == length(lls))
+    {
+      temp <- phylopars(trait_data = temp$trait_data,tree = tree,model = "lambda",phylocov_start = temp$pars[[1]],phenocov_start = temp$pars[[2]],model_par_fixed = lambdas[which.max(lls)])
+    } else {
+      temp <- phylopars(trait_data = temp$trait_data,tree = tree,model = "lambda",phylocov_start = temp$pars[[1]],phenocov_start = temp$pars[[2]],model_par_start = lambdas[which.max(lls)])
+    }
+    plant_phys_pars_mods_fit[[eqs[i]]] <- temp
+    
+    # Find the lambda with the maximum log-likelihood for curve-based (phys) parameters
+    lls <- sapply(plant_curve_pars_mods[[eqs[i]]],function(X) logLik(X)[[1]])
+    temp <- plant_curve_pars_mods[[eqs[i]]][[which.max(lls)]]
+    # Refit the model using the lambda that maximizes the log-likelihood
+    if(which.max(lls) == length(lls))
+    {
+      temp <- phylopars(trait_data = temp$trait_data,tree = tree,model = "lambda",phylocov_start = temp$pars[[1]],phenocov_start = temp$pars[[2]],model_par_fixed = lambdas[which.max(lls)])
+    } else  {
+      temp <- phylopars(trait_data = temp$trait_data,tree = tree,model = "lambda",phylocov_start = temp$pars[[1]],phenocov_start = temp$pars[[2]],model_par_start = lambdas[which.max(lls)])
+    }
+    plant_curve_pars_mods_fit[[eqs[i]]] <- temp
+    
+    cat("completed\n\n")
+  }
+ # Save the fitted models  
+  save(plant_phys_pars_mods_fit,file = "results/plant_phys_pars_mods_fit.RData")
+  save(plant_curve_pars_mods_fit,file = "results/plant_curve_pars_mods_fit.RData")
+}
+```
+
+Trait imputations
+Note: this code chunk takes approximately 45 minutes to run. 
+```{r}
+# Identify unique species in the dataset
+species <- unique(dat$species)
+
+# Try loading pre-existing models for plant physiological and curve parameters. If unsuccessful, create new lists for imputing missing values.
+success <- try(expr = {
+  suppressWarnings(load(file = "results/plant_phys_pars_mods_impute.RData"))
+  suppressWarnings(load(file = "results/plant_curve_pars_mods_impute.RData"))
+},silent = TRUE)
+
+# If loading the models failed, initialize empty lists for each equation and species
+if(inherits(success,"try-error"))
+{
+  plant_phys_pars_mods_impute <- setNames(vector("list",length = length(eqs)),eqs)
+  plant_phys_pars_mods_impute <- plant_curve_pars_mods_impute <- lapply(plant_phys_pars_mods_impute,function(X) setNames(vector("list",length = length(species)),species))
+  
+  # Loop through each equation
+  for(i in 1:length(eqs))
+  {
+     # Create a dataframe of species-specific trait-based parameters
+    plant_phys_pars_dat <- data.frame(species = ind_species,t(plant_phys_pars[eqs[i],,]),row.names = NULL)
+    temps <- vector("list",length(trees))
+    
+    # Loop through each species to impute missing data
+    for(j in 1:length(species))
+    {
+      cat("i = ",i," / j = ",j," part 1 \n",sep = "")
+      temp_dat <- plant_phys_pars_dat
+      temp_dat[temp_dat$species == species[j],-1] <- NA
+      # Assign values to 'Pmax_obs' 
+      temp_dat[temp_dat$species == species[j],"Pmax_obs"] <- dat[(dat$species == species[j] & dat$PARi==2500),"A"]
+      # Use phylopars to fit the model for the current species and equation
+      temp <- plant_phys_pars_mods_fit[[eqs[i]]]
+      temp <- try(phylopars(trait_data = temp_dat,tree = tree,model = "lambda",phylocov_start = temp$pars[[1]],phenocov_start = temp$pars[[2]],model_par_start = temp$model$lambda),silent = TRUE)
+
+# If model fitting fails, try different model parameters and optimization methods
+      if(inherits(x = temp,what = "try-error"))
+        {
+        try(temp <- phylopars(trait_data = temp_dat,tree = tree,pheno_correlated = FALSE,model = 'lambda',model_par_fixed = plant_phys_pars_mods_fit[[eqs[i]]]$model$lambda),silent = TRUE)
+        try(temp <- phylopars(trait_data = temp_dat,tree = tree,phenocov_start = temp$pars[[2]],phylocov_start = temp$pars[[1]],phylo_correlated = FALSE,model = 'lambda',model_par_fixed = temp$model$lambda),silent = TRUE)
+        try(temp <- phylopars(trait_data = temp_dat,tree = tree,phenocov_start = temp$pars[[2]],phylocov_start = temp$pars[[1]],model = 'lambda',model_par_fixed = temp$model$lambda),silent = TRUE)
+
+# Optimize the lambda parameter by checking log-likelihood for different values
+        for(l in length(lambdas):1)
+        {
+          try({ temp2 <- phylopars(trait_data = temp_dat,tree = tree,phenocov_start = temp$pars[[2]],phylocov_start = temp$pars[[1]],model = 'lambda',model_par_fixed = lambdas[l])
+          if(logLik(temp2)[[1]] >= logLik(temp)[[1]])
+          {
+            temp <- temp2
+          } else { break } },silent = TRUE)
+        }
+        
+        # Refit the model with the optimized lambda
+        temp <- phylopars(trait_data = temp_dat,tree = tree,phenocov_start = temp$pars[[2]],phylocov_start = temp$pars[[1]],model = 'lambda',model_par_fixed = temp$model$lambda)
+        try(temp <- phylopars(trait_data = temp_dat,tree = tree,phenocov_start = temp$pars[[2]],phylocov_start = temp$pars[[1]],model = 'lambda',model_par_start = temp$model$lambda),silent = TRUE)
+        
+      }
+    # Save the imputed model for the current equation and species
+      plant_phys_pars_mods_impute[[eqs[i]]][[species[j]]] <- temp
+    }
+    
+    # Repeat similar procedures for curve-based parameters
+    plant_curve_pars_dat <- data.frame(species = ind_species,t(plant_curve_pars[eqs[i],,]),row.names = NULL)
+    temps <- vector("list",length(trees))
+    
+    for(j in 1:length(species))
+    {
+      cat("i = ",i," / j = ",j," part 2 \n",sep = "")
+      temp_dat <- plant_curve_pars_dat
+      temp_dat[temp_dat$species == species[j],-1] <- NA
+      temp_dat[temp_dat$species == species[j],"Pmax_obs"] <- dat[(dat$species == species[j] & dat$PARi==2500),"A"]
+      temp <- plant_curve_pars_mods_fit[[eqs[i]]]
+      temp <- try(phylopars(trait_data = temp_dat,tree = tree,model = "lambda",phylocov_start = temp$pars[[1]],phenocov_start = temp$pars[[2]],model_par_start = temp$model$lambda),silent = TRUE)
+     
+     if(inherits(x = temp,what = "try-error"))
+      {
+        try(temp <- phylopars(trait_data = temp_dat,tree = tree,pheno_correlated = FALSE,model = 'lambda',model_par_fixed = plant_curve_pars_mods_fit[[eqs[i]]]$model$lambda),silent = TRUE)
+        try(temp <- phylopars(trait_data = temp_dat,tree = tree,phenocov_start = temp$pars[[2]],phylocov_start = temp$pars[[1]],phylo_correlated = FALSE,model = 'lambda',model_par_fixed = temp$model$lambda),silent = TRUE)
+        try(temp <- phylopars(trait_data = temp_dat,tree = tree,phenocov_start = temp$pars[[2]],phylocov_start = temp$pars[[1]],model = 'lambda',model_par_fixed = temp$model$lambda),silent = TRUE)
+       
+        for(l in length(lambdas):1)
+        {
+          try({ temp2 <- phylopars(trait_data = temp_dat,tree = tree,phenocov_start = temp$pars[[2]],phylocov_start = temp$pars[[1]],model = 'lambda',model_par_fixed = lambdas[l])
+          if(logLik(temp2)[[1]] >= logLik(temp)[[1]])
+          {
+            temp <- temp2
+          } else { break } },silent = TRUE)
+        }
+        temp <- phylopars(trait_data = temp_dat,tree = tree,phenocov_start = temp$pars[[2]],phylocov_start = temp$pars[[1]],model = 'lambda',model_par_fixed = temp$model$lambda)
+        try(temp <- phylopars(trait_data = temp_dat,tree = tree,phenocov_start = temp$pars[[2]],phylocov_start = temp$pars[[1]],model = 'lambda',model_par_start = temp$model$lambda),silent = TRUE)
+
+      }
+      
+      plant_curve_pars_mods_impute[[eqs[i]]][[species[j]]] <- temp
+    }
+    cat("completed i = ",i,"\n\n")
+  }
+  # Save the imputed models
+  save(plant_phys_pars_mods_impute,file = "results/plant_phys_pars_mods_impute.RData")
+  save(plant_curve_pars_mods_impute,file = "results/plant_curve_pars_mods_impute.RData")
+}
+```
+
+Species means trait values 
+```{r}
+# Loop through all equations in the eqs list
+for(e in 1:length(eqs))
+{
+  # Convert plant curve parameters to species means
+  sp_means <- Rphylopars:::convert_to_means(data.frame(species = ind_species,
+                           SpeciesRepDate = inds,
+                           t(plant_curve_pars[eqs[e],,]),
+                           row.names = NULL)[,c("species",colnames(plant_curve_pars))])
+   # Save species means to excel 
+   write.xlsx(sp_means,file = "final_results/curve_derived_pars_species_means.xlsx",
+              sheetName = eqs[e],append = e > 1,row.names = FALSE)
+   # Save curve-derived pars for all samples
+   write.xlsx(data.frame(species = ind_species,
+                         SpeciesRepDate = inds,t(plant_curve_pars[eqs[e],,])),
+                         file = "final_results/curve_derived_pars.xlsx",
+                         sheetName = eqs[e],append = e > 1,row.names = FALSE)
+
+# Convert physiological (trait-based) parameters to species means
+  sp_means <- Rphylopars:::convert_to_means(data.frame(species = ind_species,
+                                SpeciesRepDate = inds,
+                                t(plant_phys_pars[eqs[e],,]),
+                                row.names = NULL)[,c("species",colnames(plant_phys_pars))])
+# Save the species means to a new Excel sheet  
+write.xlsx(sp_means,file = "final_results/phys_derived_pars_species_means.xlsx",
+           sheetName = eqs[e],append = e > 1,row.names = FALSE)
+# Save trait-based data for all samples
+write.xlsx(data.frame(species = ind_species,
+                      SpeciesRepDate = inds,
+                      t(plant_phys_pars[eqs[e],,])),
+                      file = "final_results/phys_derived_pars.xlsx",
+                      sheetName = eqs[e],append = e > 1,row.names = FALSE)
+
+# Filter univariate evolutionary model results for both curve and physiological traits  
+uni_evo <- data.frame(rbind(univariate_evo_mods_results[[e]][which(univariate_evo_mods_results[[e]]$trait %in% colnames(plant_curve_pars)),],
+        univariate_evo_mods_results[[e]][which(univariate_evo_mods_results[[e]]$trait %in% colnames(plant_phys_pars)),]),row.names = NULL)
+  # Remove duplicated "Pmax_obs" row (if it exists)
+  uni_evo <- uni_evo[-which(uni_evo$trait == "Pmax_obs")[2],]
+  # Save univariate results from the evolutionary model
+  write.xlsx(uni_evo,file = "final_results/univariate_evo_pars_results.xlsx",
+             sheetName = eqs[e],append = e > 1,row.names = FALSE)
+}
+```
+
+Calculate phylogenetic signal for multivariate models 
+```{r}
+# Calculate phylogenetic signal for trait-based parameters across multiple equations
+multivar_phys_signal <- data.frame(
+  item = "multivar_phys", 
+  t(sapply(1:length(eqs),function(i){ 
+  plant_phys_pars_mods_fit[[i]]$anc_recon
+  
+  # Get the log-likelihood for the alt. (fitted) model 
+  alt <- logLik(plant_phys_pars_mods_fit[[i]])[[1]]
+  # Get the log-likelihood for the null model
+  null <- logLik(plant_phys_pars_mods[[i]][[1]])[[1]]
+  
+  # Calculate chi-squared statistic for the likelihood ratio test
+  chi_square <- as.double(2*(alt - null)) 
+  
+# Return the lambda value, log-likelihoods, chi-squared statistic, and p-value
+  c(lambda = round(plant_phys_pars_mods_fit[[i]]$model$lambda,2),
+    null_loglik = null,
+    alt_loglik = alt,
+    chisq = chi_square,
+    pval = round(pchisq(q = chi_square,df = 1,lower.tail = FALSE),3))
+  })),row.names = eqs)
+
+# Calculate phylogenetic signal for curve parameters across multiple equations
+multivar_curve_signal <- data.frame(item = "multivar_curve",t(sapply(1:length(eqs),function(i){ 
+  # Get the log-likelihood for the alt. (fitted) model 
+  alt <- logLik(plant_curve_pars_mods_fit[[i]])[[1]]
+  # Get the log-likelihood for the null model
+  null <- logLik(plant_curve_pars_mods[[i]][[1]])[[1]]
+  
+  # Calculate chi-squared statistic for the likelihood ratio test
+  chi_square <- as.double(2*(alt - null)) 
+  # Return the lambda value, log-likelihoods, chi-squared statistic, and p-value
+  c(lambda = round(plant_curve_pars_mods_fit[[i]]$model$lambda,2),
+    null_loglik = null,
+    alt_loglik = alt,
+    chisq = chi_square,
+    pval = round(pchisq(q = chi_square,df = 1,lower.tail = FALSE),3))
+})),row.names = eqs)
+
+# Save the phylogenetic signal results for the multivariate models 
+write.xlsx(x = data.frame(rbind(data.frame(eq=rownames(multivar_phys_signal),multivar_phys_signal),data.frame(eq=rownames(multivar_curve_signal),multivar_curve_signal)),row.names = NULL),file = "final_results/multivar_signal.xlsx",row.names = FALSE)
+
+# Test phylogenetic signal at each level
+dat_long <- dat |> 
+  tidyr::pivot_wider(
+    id_cols = c(species,SpeciesRepDate),
+    names_from = PARi,
+    names_prefix = "PARi_",
+    values_from = A) |>
+  dplyr::select(-SpeciesRepDate)
+# Calculate Pagel's lambda (phylogenetic signal) for each PARi level
+data.frame(PARi = PARi,phy_signal = 
+             sapply(2:ncol(dat_long),function(i) phylopars(dat_long[,c(1,i)],tree,model = 'lambda')$model$lambda))
+dat_long=as.data.frame(dat_long)
+
+# Evaluate phylogenetic signal for the predicted assimilation rates
+eq <- "eq6"
+vals <- sapply(1:length(inds),function(i) get(eq)(dat = 
+            dat[dat$SpeciesRepDate==inds[i],],
+            return = "all")$pred_fine[PARi_fine%in%seq(0,2500,by = 50)])
+
+# Calculate phylogenetic signal (Pagel's lambda) across smooth PARi levels
+a=sapply(1:nrow(vals),function(i) {
+  phy_fit <- phylopars(data.frame(species=ind_species,trait=vals[i,]),tree,model='lambda')
+  phy_fit$model$lambda
+})
+
+# Plot phylogenetic signal across the smooth function of PARi levels
+plot(seq(0,2500,by = 50),a,type='l',ylim = c(0,1))
+points(PARi,sapply(2:ncol(dat_long),function(i) phylopars(dat_long[,c(1,i)],tree,model = 'lambda')$model$lambda),pch=19)
+title(main = "Phylogenetic Signal in FVT", ylab = "Phylogenetic signal in Assimilation Rate", xlab = "PARi")
+
+# Ancestral reconstructions and correlations 
+for(e in 1:length(eqs))
+{
+  # Save the ancestral reconstruction for trait-based physiological parameters
+  write.xlsx(x = plant_phys_pars_mods_fit[[e]]$anc_recon,
+           file = "final_results/anc_recon_multivar_phys.xlsx",
+           sheetName = eqs[e],append = e > 1)
+  # Save the ancestral reconstruction for curve parameters         
+  write.xlsx(x = plant_curve_pars_mods_fit[[e]]$anc_recon,
+           file = "final_results/anc_recon_multivar_curve.xlsx",
+           sheetName = eqs[e],append = e > 1)
+  # Save the correlation matrix for trait-based physiological parameters
+  write.xlsx(x = cov2cor(plant_phys_pars_mods_fit[[e]]$pars[[1]] + 
+                           plant_phys_pars_mods_fit[[e]]$pars[[2]]),
+           file = "final_results/multivar_phys_correlations.xlsx",
+           sheetName = eqs[e],append = e > 1)
+  # Save the correlation matrix for curve parameters
+  write.xlsx(x = cov2cor(plant_curve_pars_mods_fit[[e]]$pars[[1]] + plant_curve_pars_mods_fit[[e]]$pars[[2]]),
+           file = "final_results/multivar_curve_correlations.xlsx",sheetName = eqs[e],append = e > 1)
+}
+```
+
+Plot phylogenetic signal in carbon assimilation  
+```{r}
+# Does photosynthetic rate exhibit different phylogenetic signal in different light levels?
+
+# Put data in long format 
+dat_long <- dat |> 
+  tidyr::pivot_wider(
+    id_cols = c(species,SpeciesRepDate),
+    names_from = PARi,
+    names_prefix = "PARi_",
+    values_from = A) |>
+  dplyr::select(-SpeciesRepDate)
+  data.frame(PARi = PARi,phy_signal = 
+             sapply(2:ncol(dat_long),function(i) phylopars(dat_long[,c(1,i)],tree,model = 'lambda')$model$lambda))
+  dat_long=as.data.frame(dat_long)
+
+# Select 1 photosynthetic model to compare with measured non-FVT data
+eq <- "eq6"
+vals <- sapply(1:length(inds),function(i) get(eq)(dat =
+                               dat[dat$SpeciesRepDate==inds[i],],
+                           return = "all")$pred_fine[PARi_fine%in%seq(0,2500,
+                                                                  by = 50)])
+a=sapply(1:nrow(vals),function(i) {
+  phy_fit <- phylopars(data.frame(species=ind_species,trait=vals[i,]),tree,model='lambda')
+  phy_fit$model$lambda
+})
+
+# Plot phylogenetic signal (Pagel's lambda) in assimilation across each PARi
+plot(seq(0,2500,by = 50),a,type='l',ylim = c(0,1))
+points(PARi,sapply(2:ncol(dat_long),function(i) phylopars(dat_long[,c(1,i)],tree,model = 'lambda')$model$lambda),pch=19)
+title(main = "Phylogenetic Signal in FVT", ylab = "Phylogenetic signal in Assimilation Rate", xlab = "PARi")
+``` 
+
+Plot function for all photosynthetic models 
+#comment 
+## change last chunk?
+```{r}
+curve_fit <- function(eqX,i,title = "",plot = FALSE) {
+  # The plotted curve will fit the data from each equation for each sample 
+  fit <- eqX(dat=dat[dat$SpeciesRepDate==inds[i],],return = "all")
+  calc <- fit$calc
+  
+  x <- c(
+    rep(calc[["I15"]],2),
+    rep(calc[["I25"]],2),
+    rep(calc[["I85"]],2),
+    rep(calc[["I95"]],3),
+    rep(2500,4)  )
+  
+  y <- c(
+    rep(.15*calc[["Pmax_obs"]],2),
+    rep(.25*calc[["Pmax_obs"]],2),
+    rep(.85*calc[["Pmax_obs"]],2),
+    rep(.95*calc[["Pmax_obs"]],3),
+    rep(calc[["Pmax_obs"]],4)  )
+  
+  if(plot)
+  {
+    plot(dat[dat$SpeciesRepDate==inds[i],2:3],main = paste(i,inds[i],title),xlim = c(0,2500),ylim = c(-4,max(dat[dat$SpeciesRepDate==inds[i],3],na.rm=TRUE) + 2))
+    points(x,y,pch=19)
+  }
+  if(any(is.na(x) | is.na(y)))
+  {
+    exclude <- which(is.na(x) | is.na(y))
+    x <- x[-exclude]
+    y <- y[-exclude]
+  }
+  
+  eqX <- get("eq6")
+  recon <- eqX(dat=data.frame(PARi=x,A=y),return = "all")
+  
+  if(plot)
+  {
+  points(PARi_fine,recon$pred_fine,type='l',col='red',lwd=2)
+  points(PARi_fine,fit$pred_fine,type='l',col='blue',lty=2)
+  }
+  # cat(fit$calc[["Rd"]],recon$calc[["Rd"]],"\n")
+  recon
+}
+# Plot all photosynthetic models for each sample on one figure 
+par(mfrow=c(3,3))
+eqy <- paste("eq", c(1, 2, 3, 4, 5, 6, 8, 9, 11), sep = "")
+for(eq in eqy) {
+  eqX <- get(eq)
+  curve_fit(eqX, title = paste("Equation", eq), plot = TRUE)}
+  
+```
+
+Multivariate trait imputations fits
+```{r}
+# Initialize matrices for imputations (NA filled)
+plant_phys_pars_imputations <- plant_phys_pars[,c("Icomp","phi_Icomp","Rd"),]*NA
+plant_curve_pars_imputations <- plant_phys_pars[,c("Icomp","phi_Icomp","Rd"),]*NA
+
+# Loop over all equations (eqs) and species (inds)
+for(i in 1:length(eqs)){
+  print(i)
+  
+  # Curve-based imputations
+  for(j in 1:length(inds))  {
+    # Fit the actual curve for species 'j' using the current equation 'i'
+    actual_curve <- curve_fit(eqX = get(eqs[i]),i = j,title = paste("\neq",i," pars"," BM",sep = ""))
+    # Get imputation data for the current species and equation
+    imputation <- plant_curve_pars_mods_impute[[eqs[i]]][[ind_species[j]]]
+    
+    # Prepare 'x' values (independent variable, e.g., PARi) for curve imputation
+    x <- c(unlist(imputation$ind_recon[j,,drop = FALSE][1,-(1:2)]),2500)
+    x <- c(rep(x[1:3],2),rep(x[4],3),rep(x[5],4))
+    # Prepare 'y' values (dependent variable, e.g., photosynthetic rates) based on Pmax
+    y <- c(.15,.25,.85,.95,1)*imputation$ind_recon[j,,drop = FALSE][1,"Pmax_obs"]
+    y <- c(rep(y[1:3],2),rep(y[4],3),rep(y[5],4))
+    
+    # Perform curve imputation based on 'x' and 'y' values
+    imputed_curve <- get(eqs[i])(dat = data.frame(PARi=x,A=y),return = "all")
+      # points(PARi_fine,imputed_curve$pred_fine,type='l',lwd = 2,col = "blue")
+    
+    # Extract actual physiological parameters and imputed ones
+    actual <- plant_phys_pars[i,c("Icomp","phi_Icomp","Rd"),j]
+    imputed <- imputed_curve$calc[c("Icomp","phi_Icomp","Rd")]
+    
+    # Store the imputed physiological parameters in the matrix
+    plant_phys_pars_imputations[i,c("Icomp","phi_Icomp","Rd"),j] <- imputed
+  }
+  
+  # Trait-based physiological parameter imputations
+  for(j in 1:length(inds))
+  {
+    # Fit the actual curve for species 'j' using the current equation 'i'
+    actual_curve <- curve_fit(eqX = get(eqs[i]),i = j,title = paste("\neq",i," pars"," BM",sep = ""))
+    imputation <- plant_phys_pars_mods_impute[[eqs[i]]][[ind_species[j]]]
+    
+    # Extract the imputed physiological parameters directly
+    imputed <- unlist(imputation$ind_recon[j,,drop = FALSE][1,-(1:2)])
+    # Store the imputed parameters in the matrix
+    plant_curve_pars_imputations[i,c("Icomp","phi_Icomp","Rd"),j] <- imputed
+  }
+}
+# Mean squared error (MSE) calculation for physiological imputations
+mse_phys_imputations <- data.frame(t(round(sapply(1:length(eqs),function(i) {
+  colMeans(t((plant_phys_pars[i,c("Icomp","phi_Icomp","Rd"),] - plant_phys_pars_imputations[i,,])^2))
+}),6)),row.names = eqs)
+# MSE calculation for curve imputations
+mse_curve_imputations <- data.frame(t(round(sapply(1:length(eqs),function(i) {
+  colMeans(t((plant_phys_pars[i,c("Icomp","phi_Icomp","Rd"),] - plant_curve_pars_imputations[i,,])^2))
+}),6)),row.names = eqs)
+# R^2 calculation for trait-based imputations (correlation squared)
+r2_phys_imputations <- data.frame(round(t(sapply(1:length(eqs),
+      function(i) diag(cor(t(plant_phys_pars[i,c("Icomp","phi_Icomp","Rd"),]),
+                  t(plant_phys_pars_imputations[i,,]))^2))),4),row.names = eqs)
+# R^2 calculation for curve imputations
+r2_curve_imputations <- data.frame(round(t(sapply(1:length(eqs),
+      function(i) diag(cor(t(plant_phys_pars[i,c("Icomp","phi_Icomp","Rd"),]),
+                  t(plant_curve_pars_imputations[i,,]))^2))),4),row.names = eqs)
+
+# Write the MSE and R^2 results to Excel files
+write.xlsx(x = mse_phys_imputations,"final_results/imputation_results.xlsx",sheetName = "mse_phys")
+write.xlsx(x = mse_curve_imputations,"final_results/imputation_results.xlsx",sheetName = "mse_curve",append = TRUE)
+write.xlsx(x = r2_phys_imputations,"final_results/imputation_results.xlsx",sheetName = "r2_phys",append = TRUE)
+write.xlsx(x = r2_curve_imputations,"final_results/imputation_results.xlsx",sheetName = "r2_curve",append = TRUE)
+
+```
+
+Univariate trait imputations values 
+#comment 
+Note: this code chunk takes about 30 minutes to run.
+#FIX SP IMPUTATION AT THE END 
+```{r}
+plant_phys_pars_imputations_univar <- plant_phys_pars[,c("Icomp","phi_Icomp","Rd"),]*NA
+plant_curve_pars_imputations_univar <- plant_phys_pars[,c("Icomp","phi_Icomp","Rd"),]*NA
+
+
+for(i in 1:length(eqs))
+{
+  # curve-based imputations
+  for(j in 1:length(inds))
+  {
+    cat(i,j,"\n")
+    actual_curve <- curve_fit(eqX = get(eqs[i]),i = j,title = paste("\neq",i," pars"," BM",sep = ""))
+    imputation <- plant_curve_pars_mods_impute[[eqs[i]]][[ind_species[j]]]
+    imp_Pmax <- phylopars(trait_data = imputation$trait_data[,c("species","Pmax_obs")],tree = imputation$tree,model = 'lambda')
+    imp_I15 <- phylopars(trait_data = imputation$trait_data[,c("species","I15")],tree = imputation$tree,model = 'lambda')
+    imp_I25 <- phylopars(trait_data = imputation$trait_data[,c("species","I25")],tree = imputation$tree,model = 'lambda')
+    imp_I85 <- phylopars(trait_data = imputation$trait_data[,c("species","I85")],tree = imputation$tree,model = 'lambda')
+    imp_I95 <- phylopars(trait_data = imputation$trait_data[,c("species","I95")],tree = imputation$tree,model = 'lambda')
+    
+    imputation$ind_recon[,-1] <- cbind(imp_Pmax$ind_recon[,-1],imp_I15$ind_recon[,-1],imp_I25$ind_recon[,-1],imp_I85$ind_recon[,-1],imp_I95$ind_recon[,-1])
+    x <- c(unlist(imputation$ind_recon[j,,drop = FALSE][1,-(1:2)]),2500)
+    x <- c(rep(x[1:3],2),rep(x[4],3),rep(x[5],4))
+    y <- c(.15,.25,.85,.95,1)*imputation$ind_recon[j,,drop = FALSE][1,"Pmax_obs"]
+    y <- c(rep(y[1:3],2),rep(y[4],3),rep(y[5],4))
+    # points(x,y,pch=19,col='red')
+    imputed_curve <- get(eqs[i])(dat = data.frame(PARi=x,A=y),return = "all")
+    # points(PARi_fine,imputed_curve$pred_fine,type='l',lwd = 2,col = "blue")
+    
+    actual <- plant_phys_pars[i,c("Icomp","phi_Icomp","Rd"),j]
+    imputed <- imputed_curve$calc[c("Icomp","phi_Icomp","Rd")]
+    
+    plant_curve_pars_imputations_univar[i,c("Icomp","phi_Icomp","Rd"),j] <- imputed
+    
+    
+    
+    actual_curve <- curve_fit(eqX = get(eqs[i]),i = j,title = paste("\neq",i," pars"," BM",sep = ""))
+    imputation <- plant_phys_pars_mods_impute[[eqs[i]]][[ind_species[j]]]
+    imp_Pmax <- phylopars(trait_data = imputation$trait_data[,c("species","Pmax_obs")],tree = imputation$tree,model = 'lambda')
+    imp_Icomp <- phylopars(trait_data = imputation$trait_data[,c("species","Icomp")],tree = imputation$tree,model = 'lambda')
+    imp_phi_Icomp <- phylopars(trait_data = imputation$trait_data[,c("species","phi_Icomp")],tree = imputation$tree,model = 'lambda')
+    imp_Rd <- phylopars(trait_data = imputation$trait_data[,c("species","Rd")],tree = imputation$tree,model = 'lambda')
+    imputation$ind_recon[,-1] <- cbind(imp_Pmax$ind_recon[,-1],imp_Icomp$ind_recon[,-1],imp_phi_Icomp$ind_recon[,-1],imp_Rd$ind_recon[,-1])
+    
+    imputed <- imputation$ind_recon[j,-c(1:2)]
+    plant_phys_pars_imputations_univar[i,c("Icomp","phi_Icomp","Rd"),j] <- unlist(imputed)
+  }
+}
+
+
+for(i in 1:length(eqs))
+{
+  tmp_mphys <- t(plant_phys_pars_imputations[i,,])
+  colnames(tmp_mphys) <- paste(colnames(tmp_mphys),"_mphys",sep="")
+  
+  tmp_uphys <- t(plant_phys_pars_imputations_univar[i,,])
+  colnames(tmp_uphys) <- paste(colnames(tmp_uphys),"_uphys",sep="")
+
+  tmp_mcurve <- t(plant_curve_pars_imputations[i,,])
+  colnames(tmp_mcurve) <- paste(colnames(tmp_mcurve),"_mcurve",sep="")
+  
+  tmp_ucurve <- t(plant_curve_pars_imputations_univar[i,,])
+  colnames(tmp_ucurve) <- paste(colnames(tmp_ucurve),"_ucurve",sep="")
+
+  tmp_out <- data.frame(species = ind_species,tmp_mphys,tmp_uphys,tmp_mcurve,tmp_ucurve)
+  write.xlsx(x = tmp_out,
+           file = "final_results/imputations.xlsx",sheetName = eqs[i],append = e > 1)
+  
+}
+# Univariate species mean imputations 
+read_excel_allsheets <- function(filename, tibble = FALSE) {
+    sheets <- readxl::excel_sheets(filename)
+    x <- lapply(sheets, function(X) readxl::read_excel(filename, sheet = X))
+    names(x) <- sheets
+    x
+}
+imputed_traits <- read_excel_allsheets("final_results/imputations.xlsx")
+colnames(imputed_traits$eq1)[1] <- "SpeciesRepDate"
+colnames(imputed_traits$eq2)[1] <- "SpeciesRepDate"
+colnames(imputed_traits$eq3)[1] <- "SpeciesRepDate"
+colnames(imputed_traits$eq4)[1] <- "SpeciesRepDate"
+colnames(imputed_traits$eq5)[1] <- "SpeciesRepDate"
+colnames(imputed_traits$eq6)[1] <- "SpeciesRepDate"
+colnames(imputed_traits$eq8)[1] <- "SpeciesRepDate"
+colnames(imputed_traits$eq9)[1] <- "SpeciesRepDate"
+colnames(imputed_traits$eq11)[1] <- "SpeciesRepDate"
+
+imputed_traitse1 <- imputed_traits$eq1
+imputed_traits_sp <-Rphylopars:::convert_to_means(
+  data.frame(species=ind_species,imputed_traitse1))
+
+
+imp_traits <- array(dim = c(9,length(impC),length(inds)))
+dimnames(imp_traits) <- list(paste("eq",c(1:6,8:9,11),sep = ""),c(impC),inds)
+# Convert imputed parameters to species means
+  sp_means <- Rphylopars:::convert_to_means(data.frame(species = ind_species,
+                                SpeciesRepDate = inds,
+                                t(imputed_traits[eqs[e],,]),
+                                row.names = NULL)[,c("species",colnames(imputed_traits))])
+# Save the species means to a new Excel sheet  
+write.xlsx(sp_means,file = "final_results/imputations_univariate_species_mean.xlsx",
+           sheetName = eqs[e],append = e > 1,row.names = FALSE)
+
+```
+
+Compare ancestral state reconstructions for key physiological parameters
+```{r}
+### univariate recon of phys parameters directly
+### univariate recon of curve parameters converted to phys parameters
+### multiaviate recon of phys parameters directly
+### multivariate recon of cuve parameters converted to phys_parameters
+
+# Initialize lists to store various reconstructions of each equation
+multivar_recon_curve <- multivar_recon_curve_pars <- multivar_recon_phys <-
+  univar_recon_curve <- univar_recon_curve_pars <- univar_recon_phys <- 
+    setNames(vector("list",length(eqs)),eqs)
+
+# Loop through ancestral state reconstruction for all equations 
+for(e in 1:length(eqs))
+{
+  # Univaraite Anc. Recon. for trait-based parameters
+  univar_recon_phys[[e]] <- cbind(univariate_evo_mods[[e]][["Pmax_obs"]]$anc_recon,
+                             univariate_evo_mods[[e]][["Icomp"]]$anc_recon,
+                             univariate_evo_mods[[e]][["phi_Icomp"]]$anc_recon,
+                             univariate_evo_mods[[e]][["Rd"]]$anc_recon)
+  # Univariate Anc. Recon. for curve-based parameters 
+  univar_recon_curve_pars[[e]] <- cbind(univariate_evo_mods[[e]][["Pmax_obs"]]$anc_recon,
+                              univariate_evo_mods[[e]][["I15"]]$anc_recon,
+                              univariate_evo_mods[[e]][["I25"]]$anc_recon,
+                              univariate_evo_mods[[e]][["I85"]]$anc_recon,
+                              univariate_evo_mods[[e]][["I95"]]$anc_recon)
+  
+  # Set NA matrices to storing ancestral state curve results
+  multivar_recon_curve[[e]] <- univar_recon_curve[[e]] <- univar_recon_phys[[e]] * NA
+  
+  # Multivariate Ancestral State Reconstructions
+  multivar_recon_curve_pars[[e]] <- plant_curve_pars_mods_fit[[e]]$anc_recon
+  multivar_recon_phys[[e]] <- plant_phys_pars_mods_fit[[e]]$anc_recon
+  
+  for(i in 1:nrow(univar_recon_curve_pars[[e]]))
+  {
+    # Reconstruct curves based on univariate ancestral state reconstructions
+    x <- c(unlist(univar_recon_curve_pars[[e]][i,-1,drop = FALSE]),2500)
+    x <- c(rep(x[1:3],2),rep(x[4],3),rep(x[5],4))
+    y <- c(.15,.25,.85,.95,1)*univar_recon_curve_pars[[e]][i,"Pmax_obs"]
+    y <- c(rep(y[1:3],2),rep(y[4],3),rep(y[5],4))
+    recon_curve <- get(eqs[e])(dat = data.frame(PARi=x,A=y),return = "all")
+    univar_recon_curve[[e]][i,] <- recon_curve$calc[c("Pmax_obs","Icomp","phi_Icomp","Rd")]
+    
+    # Reconstruct curves based on multivariate ancestral state reconstructions
+    x <- c(unlist(multivar_recon_curve_pars[[e]][i,-1,drop = FALSE]),2500)
+    x <- c(rep(x[1:3],2),rep(x[4],3),rep(x[5],4))
+    y <- c(.15,.25,.85,.95,1)*multivar_recon_curve_pars[[e]][i,"Pmax_obs"]
+    y <- c(rep(y[1:3],2),rep(y[4],3),rep(y[5],4))
+    multi_recon_curve_fit <- get(eqs[e])(dat = data.frame(PARi=x,A=y),return = "all")
+    
+  multivar_recon_curve[[e]][i,] <- multi_recon_curve_fit$calc[c("Pmax_obs","Icomp","phi_Icomp","Rd")]
+  }
+  
+}
+
+# Save ancestral state reconstructions in excel 
+for(e in 1:length(eqs))
+{
+    
+  tmp_mphys <- multivar_recon_phys[[e]]
+  colnames(tmp_mphys) <- paste(colnames(tmp_mphys),"_mphys",sep="")
+  
+  tmp_uphys <- univar_recon_phys[[e]]
+  colnames(tmp_uphys) <- paste(colnames(tmp_uphys),"_uphys",sep="")
+
+  tmp_mcurve <- multivar_recon_curve[[e]]
+  colnames(tmp_mcurve) <- paste(colnames(tmp_mcurve),"_mcurve",sep="")
+  
+  tmp_ucurve <- univar_recon_curve[[e]]
+  colnames(tmp_ucurve) <- paste(colnames(tmp_ucurve),"_ucurve",sep="")
+
+  tmp_out <- data.frame(tmp_mphys,tmp_uphys,tmp_mcurve,tmp_ucurve)
+  write.xlsx(x = tmp_out,
+           file = "final_results/anc_recon.xlsx",sheetName = eqs[e],append = e > 1)
+}
+```
+
+Save data in the environment 
+```{r}
+# Save all results in the environment with the following: 
+save.image(file = "saved_state_09_18_2024.RData") 
+```
+
+Evaluating imputations 
+```{r}
+library(corrplot)
+
+### Transform Data:
+# Curve-derived parameters
+curve_pars_e1 <- plant_curve_pars[1,,]
+curve_pars_e1 <- data.frame(t(curve_pars_e1))
+curve_pars_e2 <- plant_curve_pars[2,,]
+curve_pars_e2 <- data.frame(t(curve_pars_e2))
+curve_pars_e3 <- plant_curve_pars[3,,]
+curve_pars_e3 <- data.frame(t(curve_pars_e3))
+curve_pars_e4 <- plant_curve_pars[4,,]
+curve_pars_e4 <- data.frame(t(curve_pars_e4))
+curve_pars_e5 <- plant_curve_pars[5,,]
+curve_pars_e5 <- data.frame(t(curve_pars_e5))
+curve_pars_e6 <- plant_curve_pars[6,,]
+curve_pars_e6 <- data.frame(t(curve_pars_e6))
+curve_pars_e8 <- plant_curve_pars[7,,]
+curve_pars_e8 <- data.frame(t(curve_pars_e8))
+curve_pars_e9 <- plant_curve_pars[8,,]
+curve_pars_e9 <- data.frame(t(curve_pars_e9))
+curve_pars_e11 <- plant_curve_pars[9,,]
+curve_pars_e11 <- data.frame(t(curve_pars_e11))
+# Multivariate curve-derived parameter imputations 
+curve_par_imps_e1 <- plant_curve_pars_imputations[1,,]
+curve_par_imps_e1 <- data.frame(t(curve_par_imps_e1))
+curve_par_imps_e2 <- plant_curve_pars_imputations[2,,]
+curve_par_imps_e2 <- data.frame(t(curve_par_imps_e2))
+curve_par_imps_e3 <- plant_curve_pars_imputations[3,,]
+curve_par_imps_e3 <- data.frame(t(curve_par_imps_e3))
+curve_par_imps_e4 <- plant_curve_pars_imputations[4,,]
+curve_par_imps_e4 <- data.frame(t(curve_par_imps_e4))
+curve_par_imps_e5 <- plant_curve_pars_imputations[5,,]
+curve_par_imps_e5 <- data.frame(t(curve_par_imps_e5))
+curve_par_imps_e6 <- plant_curve_pars_imputations[6,,]
+curve_par_imps_e6 <- data.frame(t(curve_par_imps_e6))
+curve_par_imps_e8 <- plant_curve_pars_imputations[7,,]
+curve_par_imps_e8 <- data.frame(t(curve_par_imps_e8))
+curve_par_imps_e9 <- plant_curve_pars_imputations[8,,]
+curve_par_imps_e9 <- data.frame(t(curve_par_imps_e9))
+curve_par_imps_e11 <- plant_curve_pars_imputations[9,,]
+curve_par_imps_e11 <- data.frame(t(curve_par_imps_e11))
+# Univariate curve-derived parameters imputations 
+curve_par_uni_imps_e1 <- plant_curve_pars_imputations_univar[1,,]
+curve_par_uni_imps_e1 <- data.frame(t(curve_par_uni_imps_e1))
+curve_par_uni_imps_e2 <- plant_curve_pars_imputations_univar[2,,]
+curve_par_uni_imps_e2 <- data.frame(t(curve_par_uni_imps_e2))
+curve_par_uni_imps_e3 <- plant_curve_pars_imputations_univar[3,,]
+curve_par_uni_imps_e3 <- data.frame(t(curve_par_uni_imps_e3))
+curve_par_uni_imps_e4 <- plant_curve_pars_imputations_univar[4,,]
+curve_par_uni_imps_e4 <- data.frame(t(curve_par_uni_imps_e4))
+curve_par_uni_imps_e5 <- plant_curve_pars_imputations_univar[5,,]
+curve_par_uni_imps_e5 <- data.frame(t(curve_par_uni_imps_e5))
+curve_par_uni_imps_e6 <- plant_curve_pars_imputations_univar[6,,]
+curve_par_uni_imps_e6 <- data.frame(t(curve_par_uni_imps_e6))
+curve_par_uni_imps_e8 <- plant_curve_pars_imputations_univar[7,,]
+curve_par_uni_imps_e8 <- data.frame(t(curve_par_uni_imps_e8))
+curve_par_uni_imps_e9 <- plant_curve_pars_imputations_univar[8,,]
+curve_par_uni_imps_e9 <- data.frame(t(curve_par_uni_imps_e9))
+curve_par_uni_imps_e11 <- plant_curve_pars_imputations_univar[9,,]
+curve_par_uni_imps_e11 <- data.frame(t(curve_par_uni_imps_e11))
+# Trait-based phys traits
+phys_pars_e1 <- plant_phys_pars[1,,]
+phys_pars_e1 <- data.frame(t(phys_pars_e1))
+phys_pars_e2 <- plant_phys_pars[2,,]
+phys_pars_e2 <- data.frame(t(phys_pars_e2))
+phys_pars_e3 <- plant_phys_pars[3,,]
+phys_pars_e3 <- data.frame(t(phys_pars_e3))
+phys_pars_e4 <- plant_phys_pars[4,,]
+phys_pars_e4 <- data.frame(t(phys_pars_e4))
+phys_pars_e5 <- plant_phys_pars[5,,]
+phys_pars_e5 <- data.frame(t(phys_pars_e5))
+phys_pars_e6 <- plant_phys_pars[6,,]
+phys_pars_e6 <- data.frame(t(phys_pars_e6))
+phys_pars_e8 <- plant_phys_pars[7,,]
+phys_pars_e8 <- data.frame(t(phys_pars_e8))
+phys_pars_e9 <- plant_phys_pars[8,,]
+phys_pars_e9 <- data.frame(t(phys_pars_e9))
+phys_pars_e11 <- plant_phys_pars[9,,]
+phys_pars_e11 <- data.frame(t(phys_pars_e11))
+# Multivariate trait-based phys parameter imputations 
+phys_par_imps_e1 <- plant_phys_pars_imputations[1,,]
+phys_par_imps_e1 <- data.frame(t(phys_par_imps_e1))
+phys_par_imps_e2 <- plant_phys_pars_imputations[2,,]
+phys_par_imps_e2 <- data.frame(t(phys_par_imps_e2))
+phys_par_imps_e3 <- plant_phys_pars_imputations[3,,]
+phys_par_imps_e3 <- data.frame(t(phys_par_imps_e3))
+phys_par_imps_e4 <- plant_phys_pars_imputations[4,,]
+phys_par_imps_e4 <- data.frame(t(phys_par_imps_e4))
+phys_par_imps_e5 <- plant_phys_pars_imputations[5,,]
+phys_par_imps_e5 <- data.frame(t(phys_par_imps_e5))
+phys_par_imps_e6 <- plant_phys_pars_imputations[6,,]
+phys_par_imps_e6 <- data.frame(t(phys_par_imps_e6))
+phys_par_imps_e8 <- plant_phys_pars_imputations[7,,]
+phys_par_imps_e8 <- data.frame(t(phys_par_imps_e8))
+phys_par_imps_e9 <- plant_phys_pars_imputations[8,,]
+phys_par_imps_e9 <- data.frame(t(phys_par_imps_e9))
+phys_par_imps_e11 <- plant_phys_pars_imputations[9,,]
+phys_par_imps_e11 <- data.frame(t(phys_par_imps_e11))
+# Univariate trait-based phys parameter imputations 
+phys_par_uni_imps_e1 <- plant_phys_pars_imputations_univar[1,,]
+phys_par_uni_imps_e1 <- data.frame(t(phys_par_uni_imps_e1))
+phys_par_uni_imps_e2 <- plant_phys_pars_imputations_univar[2,,]
+phys_par_uni_imps_e2 <- data.frame(t(phys_par_uni_imps_e2))
+phys_par_uni_imps_e3 <- plant_phys_pars_imputations_univar[3,,]
+phys_par_uni_imps_e3 <- data.frame(t(phys_par_uni_imps_e3))
+phys_par_uni_imps_e4 <- plant_phys_pars_imputations_univar[4,,]
+phys_par_uni_imps_e4 <- data.frame(t(phys_par_uni_imps_e4))
+phys_par_uni_imps_e5 <- plant_phys_pars_imputations_univar[5,,]
+phys_par_uni_imps_e5 <- data.frame(t(phys_par_uni_imps_e5))
+phys_par_uni_imps_e6 <- plant_phys_pars_imputations_univar[6,,]
+phys_par_uni_imps_e6 <- data.frame(t(phys_par_uni_imps_e6))
+phys_par_uni_imps_e8 <- plant_phys_pars_imputations_univar[7,,]
+phys_par_uni_imps_e8 <- data.frame(t(phys_par_uni_imps_e8))
+phys_par_uni_imps_e9 <- plant_phys_pars_imputations_univar[8,,]
+phys_par_uni_imps_e9 <- data.frame(t(phys_par_uni_imps_e9))
+phys_par_uni_imps_e11 <- plant_phys_pars_imputations_univar[9,,]
+phys_par_uni_imps_e11 <- data.frame(t(phys_par_uni_imps_e11))
+# Use the following code to look at species mean imputation values 
+curve_pars_e1_spm <- Rphylopars:::convert_to_means(data.frame(species=ind_species,curve_pars_e1))
+
+### Make correlations 
+# Curve-based parameters
+cor_curve_pars_e1 <- cor(phys_pars_e1, curve_par_imps_e1, use = "complete.obs")
+cor_curve_uni_pars_e1 <- cor(phys_pars_e1, curve_par_uni_imps_e1, use = "complete.obs")
+cor_curve_uni_v_multi_pars_e1 <- cor(curve_par_imps_e1, curve_par_uni_imps_e1, use = "complete.obs")
+cor_curve_pars_e2 <- cor(phys_pars_e2, curve_par_imps_e2, use = "complete.obs")
+cor_curve_uni_pars_e2 <- cor(phys_pars_e2, curve_par_uni_imps_e2, use = "complete.obs")
+cor_curve_uni_v_multi_pars_e2 <- cor(curve_par_imps_e2, curve_par_uni_imps_e2, use = "complete.obs")
+cor_curve_pars_e3 <- cor(phys_pars_e3, curve_par_imps_e3, use = "complete.obs")
+cor_curve_uni_pars_e3 <- cor(phys_pars_e3, curve_par_uni_imps_e3, use = "complete.obs")
+cor_curve_uni_v_multi_pars_e3 <- cor(curve_par_imps_e3, curve_par_uni_imps_e3, use = "complete.obs")
+cor_curve_pars_e4 <- cor(phys_pars_e4, curve_par_imps_e4, use = "complete.obs")
+cor_curve_uni_pars_e4 <- cor(phys_pars_e4, curve_par_uni_imps_e4, use = "complete.obs")
+cor_curve_uni_v_multi_pars_e4 <- cor(curve_par_imps_e4, curve_par_uni_imps_e4, use = "complete.obs")
+cor_curve_pars_e5 <- cor(phys_pars_e5, curve_par_imps_e5, use = "complete.obs")
+cor_curve_uni_pars_e5 <- cor(phys_pars_e5, curve_par_uni_imps_e5, use = "complete.obs")
+cor_curve_uni_v_multi_pars_e5 <- cor(curve_par_imps_e5, curve_par_uni_imps_e5, use = "complete.obs")
+cor_curve_pars_e6 <- cor(phys_pars_e6, curve_par_imps_e6, use = "complete.obs")
+cor_curve_uni_pars_e6 <- cor(phys_pars_e6, curve_par_uni_imps_e6, use = "complete.obs")
+cor_curve_uni_v_multi_pars_e6 <- cor(curve_par_imps_e6, curve_par_uni_imps_e6, use = "complete.obs")
+cor_curve_pars_e8 <- cor(phys_pars_e8, curve_par_imps_e8, use = "complete.obs")
+cor_curve_uni_pars_e8 <- cor(phys_pars_e8, curve_par_uni_imps_e8, use = "complete.obs")
+cor_curve_uni_v_multi_pars_e8 <- cor(curve_par_imps_e8, curve_par_uni_imps_e8, use = "complete.obs")
+cor_curve_pars_e9 <- cor(phys_pars_e9, curve_par_imps_e9, use = "complete.obs")
+cor_curve_uni_pars_e9 <- cor(phys_pars_e9, curve_par_uni_imps_e9, use = "complete.obs")
+cor_curve_uni_v_multi_pars_e9 <- cor(curve_par_imps_e9, curve_par_uni_imps_e9, use = "complete.obs")
+cor_curve_pars_e11 <- cor(phys_pars_e11, curve_par_imps_e11, use = "complete.obs")
+cor_curve_uni_pars_e11 <- cor(phys_pars_e11, curve_par_uni_imps_e11, use = "complete.obs")
+cor_curve_uni_v_multi_pars_e11 <- cor(curve_par_imps_e11, curve_par_uni_imps_e11, use = "complete.obs")
+# Trait-based phys m parameters 
+cor_phys_pars_e1 <- cor(phys_pars_e1, phys_par_imps_e1, use = "complete.obs")
+cor_phys_uni_pars_e1 <- cor(phys_pars_e1, phys_par_uni_imps_e1, use = "complete.obs")
+cor_phys_uni_v_multi_pars_e1 <- cor(phys_par_imps_e1, phys_par_uni_imps_e1, use = "complete.obs")
+cor_phys_pars_e2 <- cor(phys_pars_e2, phys_par_imps_e2, use = "complete.obs")
+cor_phys_uni_pars_e2 <- cor(phys_pars_e2, phys_par_uni_imps_e2, use = "complete.obs")
+cor_phys_uni_v_multi_pars_e2 <- cor(phys_par_imps_e2, phys_par_uni_imps_e2, use = "complete.obs")
+cor_phys_pars_e3 <- cor(phys_pars_e3, phys_par_imps_e3, use = "complete.obs")
+cor_phys_uni_pars_e3 <- cor(phys_pars_e3, phys_par_uni_imps_e3, use = "complete.obs")
+cor_phys_uni_v_multi_pars_e3 <- cor(phys_par_imps_e3, phys_par_uni_imps_e3, use = "complete.obs")
+cor_phys_pars_e4 <- cor(phys_pars_e4, phys_par_imps_e4, use = "complete.obs")
+cor_phys_uni_pars_e4 <- cor(phys_pars_e4, phys_par_uni_imps_e4, use = "complete.obs")
+cor_phys_uni_v_multi_pars_e4 <- cor(phys_par_imps_e4, phys_par_uni_imps_e4, use = "complete.obs")
+cor_phys_pars_e5 <- cor(phys_pars_e5, phys_par_imps_e5, use = "complete.obs")
+cor_phys_uni_pars_e5 <- cor(phys_pars_e5, phys_par_uni_imps_e5, use = "complete.obs")
+cor_phys_uni_v_multi_pars_e5 <- cor(phys_par_imps_e5, phys_par_uni_imps_e5, use = "complete.obs")
+cor_phys_pars_e6 <- cor(phys_pars_e6, phys_par_imps_e6, use = "complete.obs")
+cor_phys_uni_pars_e6 <- cor(phys_pars_e6, phys_par_uni_imps_e6, use = "complete.obs")
+cor_phys_uni_v_multi_pars_e6 <- cor(phys_par_imps_e6, phys_par_uni_imps_e6, use = "complete.obs")
+cor_phys_pars_e8 <- cor(phys_pars_e8, phys_par_imps_e8, use = "complete.obs")
+cor_phys_uni_pars_e8 <- cor(phys_pars_e8, phys_par_uni_imps_e8, use = "complete.obs")
+cor_phys_uni_v_multi_pars_e8 <- cor(phys_par_imps_e8, phys_par_uni_imps_e8, use = "complete.obs")
+cor_phys_pars_e9 <- cor(phys_pars_e9, phys_par_imps_e9, use = "complete.obs")
+cor_phys_uni_pars_e9 <- cor(phys_pars_e9, phys_par_uni_imps_e9, use = "complete.obs")
+cor_phys_uni_v_multi_pars_e9 <- cor(phys_par_imps_e9, phys_par_uni_imps_e9, use = "complete.obs")
+cor_phys_pars_e11 <- cor(phys_pars_e11, phys_par_imps_e11, use = "complete.obs")
+cor_phys_uni_pars_e11 <- cor(phys_pars_e11, phys_par_uni_imps_e11, use = "complete.obs")
+cor_phys_uni_v_multi_pars_e11 <- cor(phys_par_imps_e11, phys_par_uni_imps_e11, use = "complete.obs")
+
+# Print correlation tables
+print(cor_curve_pars_e1)
+print(cor_curve_pars_e2)
+print(cor_curve_pars_e3)
+print(cor_curve_pars_e4)
+print(cor_curve_pars_e5)
+print(cor_curve_pars_e6)
+print(cor_curve_pars_e8)
+print(cor_curve_pars_e9)
+print(cor_curve_pars_e11)
+
+print(cor_curve_uni_pars_e1)
+print(cor_curve_uni_pars_e2)
+print(cor_curve_uni_pars_e3)
+print(cor_curve_uni_pars_e4)
+print(cor_curve_uni_pars_e5)
+print(cor_curve_uni_pars_e6)
+print(cor_curve_uni_pars_e8)
+print(cor_curve_uni_pars_e9)
+print(cor_curve_uni_pars_e11)
+
+print(cor_curve_uni_v_multi_pars_e1)
+print(cor_curve_uni_v_multi_pars_e2)
+print(cor_curve_uni_v_multi_pars_e3)
+print(cor_curve_uni_v_multi_pars_e4)
+print(cor_curve_uni_v_multi_pars_e5)
+print(cor_curve_uni_v_multi_pars_e6)
+print(cor_curve_uni_v_multi_pars_e8)
+print(cor_curve_uni_v_multi_pars_e9)
+print(cor_curve_uni_v_multi_pars_e11)
+
+print(cor_phys_pars_e1)
+print(cor_phys_pars_e2)
+print(cor_phys_pars_e3)
+print(cor_phys_pars_e4)
+print(cor_phys_pars_e5)
+print(cor_phys_pars_e6)
+print(cor_phys_pars_e8)
+print(cor_phys_pars_e9)
+print(cor_phys_pars_e11)
+
+print(cor_phys_uni_pars_e1)
+print(cor_phys_uni_pars_e2)
+print(cor_phys_uni_pars_e3)
+print(cor_phys_uni_pars_e4)
+print(cor_phys_uni_pars_e5)
+print(cor_phys_uni_pars_e6)
+print(cor_phys_uni_pars_e8)
+print(cor_phys_uni_pars_e9)
+print(cor_phys_uni_pars_e11)
+
+print(cor_phys_uni_v_multi_pars_e1)
+print(cor_phys_uni_v_multi_pars_e2)
+print(cor_phys_uni_v_multi_pars_e3)
+print(cor_phys_uni_v_multi_pars_e4)
+print(cor_phys_uni_v_multi_pars_e5)
+print(cor_phys_uni_v_multi_pars_e6)
+print(cor_phys_uni_v_multi_pars_e8)
+print(cor_phys_uni_v_multi_pars_e9)
+print(cor_phys_uni_v_multi_pars_e11)
+
+### Plot
+# NLS species means vs multivariate imputed curve traits
+corrplot(cor_curve_pars_e1, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate curve pars e1")
+corrplot(cor_curve_pars_e2, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate curve pars e2")
+corrplot(cor_curve_pars_e3, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate curve pars e3")
+corrplot(cor_curve_pars_e4, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate curve pars e4")
+corrplot(cor_curve_pars_e5, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate curve pars e5")
+corrplot(cor_curve_pars_e6, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate curve pars e6")
+corrplot(cor_curve_pars_e8, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate curve pars e8")
+corrplot(cor_curve_pars_e9, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate curve pars e9")
+corrplot(cor_curve_pars_e11, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate curve pars e11")
+
+# NLS species means vs multivariate imputed curve traits
+corrplot(cor_curve_uni_pars_e1, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate curve pars e1")
+corrplot(cor_curve_uni_pars_e2, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate curve pars e2")
+corrplot(cor_curve_uni_pars_e3, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate curve pars e3")
+corrplot(cor_curve_uni_pars_e4, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate curve pars e4")
+corrplot(cor_curve_uni_pars_e5, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate curve pars e5")
+corrplot(cor_curve_uni_pars_e6, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate curve pars e6")
+corrplot(cor_curve_uni_pars_e8, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate curve pars e8")
+corrplot(cor_curve_uni_pars_e9, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate curve pars e9")
+corrplot(cor_curve_uni_pars_e11, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate curve pars e11")
+
+# NLS species means vs multivariate imputed phys traits
+corrplot(cor_phys_pars_e1, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate phys pars e1")
+corrplot(cor_phys_pars_e2, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate phys pars e2")
+corrplot(cor_phys_pars_e3, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate phys pars e3")
+corrplot(cor_phys_pars_e4, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate phys pars e4")
+corrplot(cor_phys_pars_e5, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate phys pars e5")
+corrplot(cor_phys_pars_e6, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate phys pars e6")
+corrplot(cor_phys_pars_e8, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate phys pars e8")
+corrplot(cor_phys_pars_e9, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate phys pars e9")
+corrplot(cor_phys_pars_e11, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed multivariate phys pars e11")
+
+# NLS species means vs univariate imputed phys traits
+corrplot(cor_phys_uni_pars_e1, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate phys pars e1")
+corrplot(cor_phys_uni_pars_e2, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate phys pars e2")
+corrplot(cor_phys_uni_pars_e3, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate phys pars e3")
+corrplot(cor_phys_uni_pars_e4, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate phys pars e4")
+corrplot(cor_phys_uni_pars_e5, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate phys pars e5")
+corrplot(cor_phys_uni_pars_e6, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate phys pars e6")
+corrplot(cor_phys_uni_pars_e8, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate phys pars e8")
+corrplot(cor_phys_uni_pars_e9, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate phys pars e9")
+corrplot(cor_phys_uni_pars_e11, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "sp. means vs imputed univariate phys pars e11")
+
+# Univariate vs multivariate imputed curve traits
+corrplot(cor_curve_uni_v_multi_pars_e1, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate curve pars e1")
+corrplot(cor_curve_uni_v_multi_pars_e2, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate curve pars e2")
+corrplot(cor_curve_uni_v_multi_pars_e3, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate curve pars e3")
+corrplot(cor_curve_uni_v_multi_pars_e4, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate curve pars e4")
+corrplot(cor_curve_uni_v_multi_pars_e5, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate curve pars e5")
+corrplot(cor_curve_uni_v_multi_pars_e6, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate curve pars e6")
+corrplot(cor_curve_uni_v_multi_pars_e8, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate curve pars e8")
+corrplot(cor_curve_uni_v_multi_pars_e9, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate curve pars e9")
+corrplot(cor_curve_uni_v_multi_pars_e11, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate curve pars e11")
+
+# Univariate vs multivariate imputed phys traits
+corrplot(cor_phys_uni_v_multi_pars_e1, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate phys pars e1")
+corrplot(cor_phys_uni_v_multi_pars_e2, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate phys pars e2")
+corrplot(cor_phys_uni_v_multi_pars_e3, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate phys pars e3")
+corrplot(cor_phys_uni_v_multi_pars_e4, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate phys pars e4")
+corrplot(cor_phys_uni_v_multi_pars_e5, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate phys pars e5")
+corrplot(cor_phys_uni_v_multi_pars_e6, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate phys pars e6")
+corrplot(cor_phys_uni_v_multi_pars_e8, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate phys pars e8")
+corrplot(cor_phys_uni_v_multi_pars_e9, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate phys pars e9")
+corrplot(cor_phys_uni_v_multi_pars_e11, method = "color", tl.col = "black", mar = c(0,0,2,0), main = "imputed univariate vs multivariate phys pars e11")
+```
+
+Plot all photosynthetic models with interesting sp 
+#comment
+```{r}
+eqX <- paste("eq",c(1,2,3,4,5,6,8,9,11),sep = "") 
+
+plot_f <- function(eqX, title = "", plot_recon = FALSE) {
+
+  interestingsp <- c("Agrestis_1_29/10/19", "Arizonensis_4_3/11/2019", "Mollis_4_30/10/19")
+  
+  colors <- c("green", "red", "blue")
+  
+  y_max <- -Inf
+  
+  for(i in 1:length(interestingsp)) {
+    fit <- eqX(dat=dat[dat$SpeciesRepDate==interestingsp[i],], return = "all")
+    calc <- fit$calc
+    
+    y_max <- max(y_max, calc[["Pmax_obs"]], na.rm = TRUE)
+  }
+  
+  plot(1, type="n", xlim = c(0, 2500), ylim = c(-4, 30),
+       xlab="PARi", ylab="Pmax_obs", main = title)
+  
+  for(i in 1:length(interestingsp)) {
+    fit <- eqX(dat=dat[dat$SpeciesRepDate==interestingsp[i],], return = "all")
+    calc <- fit$calc
+    
+    x <- c(
+      rep(calc[["I15"]], 2),
+      rep(calc[["I25"]], 2),
+      rep(calc[["I85"]], 2),
+      rep(calc[["I95"]], 3),
+      rep(2500, 4)
+    )
+    
+    y <- c(
+      rep(.15*calc[["Pmax_obs"]], 2),
+      rep(.25*calc[["Pmax_obs"]], 2),
+      rep(.85*calc[["Pmax_obs"]], 2),
+      rep(.95*calc[["Pmax_obs"]], 3),
+      rep(calc[["Pmax_obs"]], 4)
+    )
+    
+    points(dat[dat$SpeciesRepDate==interestingsp[i], 2:3], col=colors[i], pch=19)
+    #points(x, y, col=colors[i], pch=19)
+    
+    if(any(is.na(x) | is.na(y))) {
+      exclude <- which(is.na(x) | is.na(y))
+      x <- x[-exclude]
+      y <- y[-exclude]
+    }
+   
+    recon <- eqX(dat=data.frame(PARi=x, A=y), return = "all")
+    
+    if(plot_recon) lines(PARi_fine, recon$pred_fine, type='l', col=colors[i], lwd=2)
+    lines(PARi_fine, fit$pred_fine, type='l', col=colors[i], lty=2)
+  }
+  
+  #legend("topright", legend = legend_labels, col = colors, pch = 19)
+}
+
+par(mfrow=c(3,3))
+for(eq in eqX) {
+  eqY<- get(eq)
+  plot_f(eqY, title = paste("Equation", eq))}
+dev.off()
+```
+
+Graphing each approach 
+```{r}
+# Set optimized photosynthetic model 
+eq_i <- "eq6"
+
+# Load fine scale results to reduce computation time 
+load(file = "R/curves.RData")
+load(file = "R/univar_recon.RData")
+load(file = "R/multivar_recon.RData")
+load(file = "R/univar_imput.RData")
+load(file = "R/multivar_imput.RData")
+
+# Plot optimal photosynthetic model eq for all OBSERVED SPECIES MEANS
+plotNLS <- curves[[eq_i]] %>%
+  mutate(lifehist_3cats = c("Annual","Basal Rosette Perennial","Erect Perennial")[match(lifehist_3cats,c("A","BRP","EP"))]) %>%
+  group_by(species,PARi) %>% 
+  summarize(A = mean(A),lifehist_3cats = lifehist_3cats[1]) %>% 
+  ggplot(mapping = aes(x = PARi,y = A,color = lifehist_3cats,shape = species)) + 
+  ggtitle("NLS Species Average") +
+  geom_line(size = 1) + 
+  theme_classic() + 
+  # guides(color = "none") + 
+  labs(color = "Growth Form")
+plotNLS
+
+# Plot UNIVARIATE ancestral state reconstructions of species means 
+plotUNI <- univar_recon[[eq_i]] %>%
+  mutate(lifehist_3cats = c("Annual","Basal Rosette Perennial","Erect Perennial")[match(lifehist_3cats,c("A","BRP","EP"))]) %>%
+  filter(species %in% tree$tip.label) %>%
+  group_by(species,PARi) %>% 
+  summarize(A = mean(A),lifehist_3cats = lifehist_3cats[1],species = species[1]) %>% 
+  ggplot(mapping = aes(x = PARi,y = A,color = lifehist_3cats,shape = species)) + 
+  ggtitle("Univariate Curve Species Means Anc Recon") +
+  geom_line(size = 1) + 
+  theme_classic() + 
+  # guides(color = "none") + 
+  labs(color = "Growth Form")
+plotUNI
+
+# Plot MULTIVARIATE ancestral state reconstructions of species means
+plotMULTI <- multivar_recon[[eq_i]] %>%
+  mutate(lifehist_3cats = c("Annual","Basal Rosette Perennial","Erect Perennial")[match(lifehist_3cats,c("A","BRP","EP"))]) %>%
+  filter(species %in% tree$tip.label) %>%
+  group_by(species,PARi) %>% 
+  summarize(A = mean(A),lifehist_3cats = lifehist_3cats[1],species = species[1]) %>% 
+  ggplot(mapping = aes(x = PARi,y = A,color = lifehist_3cats,shape = species)) + 
+  ggtitle("Multivariate Curve Species Means Anc Recon") +
+  geom_line(size = 1) + 
+  theme_classic() + 
+  # guides(color = "none") + 
+  labs(color = "Growth Form")
+plotMULTI
+
+# Plot MULTIVARIATE imputations of species means 
+plotMULTI_imps <- multivar_imput[[eq_i]] %>%
+  mutate(lifehist_3cats = c("Annual","Basal Rosette Perennial","Erect Perennial")[match(lifehist_3cats,c("A","BRP","EP"))]) %>%
+  group_by(species,PARi) %>% 
+  summarize(A = mean(A),lifehist_3cats = lifehist_3cats[1]) %>% 
+  ggplot(mapping = aes(x = PARi,y = A, color = lifehist_3cats,shape = species)) + 
+  ggtitle("Multivariate Curve Species Means Imputations") +
+  geom_line(size = 1) + 
+  theme_classic() + 
+  # guides(color = "none") + 
+  labs(color = "Growth Form")
+plotMULTI_imps
+
+# Plot optimal photosynthetic model eq for all OBSERVED SPECIES MEANS by clade
+plotNLS_clade <- curves[[eq_i]] %>%  mutate(clade = c("Unresolved Helianthus","Annual","South Eastern Perennial","Large Perennial")[match(clade,c("N/A","A","SE","LP"))]) %>%
+  group_by(species,PARi) %>% 
+  summarize(A = mean(A),clade = clade[1]) %>% 
+  ggplot(mapping = aes(x = PARi,y = A,color = clade,shape = species)) + 
+  ggtitle("NLS Species Average") +
+  geom_line(size = 1) + 
+  theme_classic() + 
+  # guides(color = "none") + 
+  labs(color = "Clade")
+plotNLS_clade
+
+# Plot UNIVARIATE ancestral state reconstructions of species means by clade
+plotUNI_clade <- univar_recon[[eq_i]] %>%
+  mutate(clade = c("Unresolved Helianthus","Annual","South Eastern Perennial","Large Perennial")[match(clade,c("N/A","A","SE","LP"))]) %>%  filter(species %in% tree$tip.label) %>%
+  group_by(species,PARi) %>% 
+  summarize(A = mean(A),clade = clade[1],species = species[1]) %>% 
+  ggplot(mapping = aes(x = PARi,y = A,color = clade,shape = species)) + 
+  ggtitle("Univariate Curve Species Means Anc Recon") +
+  geom_line(size = 1) + 
+  theme_classic() + 
+  # guides(color = "none") + 
+  labs(color = "Clade")
+plotUNI_clade
+
+# Plot MULTIVARIATE ancestral state reconstructions of species means by clade
+plotMULTI_clade <- multivar_recon[[eq_i]] %>%
+ mutate(clade = c("Unresolved Helianthus","Annual","South Eastern Perennial","Large Perennial")[match(clade,c("N/A","A","SE","LP"))]) %>%
+  filter(species %in% tree$tip.label) %>%
+  group_by(species,PARi) %>% 
+  summarize(A = mean(A),clade = clade[1],species = species[1]) %>% 
+  ggplot(mapping = aes(x = PARi,y = A,color = clade, species = species)) + 
+  ggtitle("Multivariate Curve Species Means Anc Recon") +
+  geom_line(size = 1) + 
+  theme_classic() + 
+  # guides(color = "none") + 
+  labs(color = "Clade")
+plotMULTI_clade
+
+# Plot MULTIVARIATE imputations of species means by clade
+plotMULTI_imps_clade <- multivar_imput[[eq_i]] %>%
+  mutate(clade = c("Unresolved Helianthus","Annual","South Eastern Perennial","Large Perennial")[match(clade,c("N/A","A","SE","LP"))]) %>%
+  group_by(species,PARi) %>% 
+  summarize(A = mean(A),clade = clade[1]) %>% 
+  ggplot(mapping = aes(x = PARi,y = A, color = clade, shape = species)) + 
+  ggtitle("Multivariate Curve Species Means Imputations") +
+  geom_line(size = 1) + 
+  theme_classic() + 
+  # guides(color = "none") + 
+  labs(color = "Clade")
+plotMULTI_imps_clade
+
+# Plot optimal photosynthetic model BY ALL INDIVIDUALS
+plot <- curves[[eq_i]] %>%
+  mutate(lifehist_3cats = c("Annual","Basal Rosette Perennial","Erect Perennial")[match(lifehist_3cats,c("A","BRP","EP"))]) %>%
+  group_by(ind,PARi) %>% 
+  summarize(A = mean(A),lifehist_3cats = lifehist_3cats[1],species = species[1]) %>% 
+  ggplot(mapping = aes(x = PARi,y = A,color = lifehist_3cats,shape = ind)) + 
+  ggtitle("All NLS Averages") +
+  geom_line(size = 1) + 
+  theme_classic() + 
+  # guides(color = "none") + 
+  labs(color = "Growth Form")
+
+# Plot UNIVARIATE ancestral state reconstructions of all individual curves
+plot <- univar_imput[[eq_i]] %>%
+  mutate(lifehist_3cats = c("Annual","Basal Rosette Perennial","Erect Perennial")[match(lifehist_3cats,c("A","BRP","EP"))]) %>%
+  ggplot(mapping = aes(x = PARi,y = A,color = lifehist_3cats,shape = ind)) + 
+  ggtitle("Univariate Curve Imputations for all samples") +
+  geom_line(size = 1) + 
+  theme_classic() + 
+  # guides(color = "none") + 
+  labs(color = "Growth Form")
+
+# Plot MULTIVARIATE imputations of all individual curves
+plot <- multivar_imput[[eq_i]] %>%
+  mutate(lifehist_3cats = c("Annual","Basal Rosette Perennial","Erect Perennial")[match(lifehist_3cats,c("A","BRP","EP"))]) %>%
+  ggplot(mapping = aes(x = PARi,y = A,color = lifehist_3cats,shape = ind)) + 
+  ggtitle("Multivariate Curve Imputations for all samples") +
+  geom_line(size = 1) + 
+  theme_classic() + 
+  # guides(color = "none") + 
+  labs(color = "Growth Form")
+
+```
+
+Plot ancestral state reconstruction correlations
+#redo a lil after recieving code 
+```{r}
+
+library(dplyr)
+
+#Import files to R
+file_paths <- c("recon cors_anc_recon_all_cors.xlsx", "recon cors_anc_recon_anc_cors.xlsx", "recon cors_anc_recon_sp_cors.xlsx", "recon cors_imputation_cors.xlsx")
+sheet_names <- c("eq1", "eq2", "eq3", "eq4", "eq5", "eq6", "eq8", "eq9", "eq11")
+all_traits <- c("Pmax_obs_mphys", "Pmax_obs_uphys", "Pmax_obs_mcurve", "Pmax_obs_ucurve",  "Icomp_mphys", "Icomp_uphys", "Icomp_mcurve", "Icomp_ucurve", "phi_Icomp_mphys", "phi_Icomp_uphys", "phi_Icomp_mcurve", "phi_Icomp_ucurve", "Rd_mphys", "Rd_uphys", "Rd_mcurve", "Rd_ucurve")
+anc_recon_cors <- vector(mode = "list")
+
+# Function to adjust data frames
+adjust_data <- function(data, is_imputation = FALSE) {
+ 
+   data <- as.data.frame(data)
+   
+  # Ensure the first row is used for column names and remove the first column if needed
+  if (ncol(data) > 1) {
+    colnames(data) <- data[1, ]
+    data <- data[-1, ]
+  }
+  
+  # Set row names from the first column
+  rownames(data) <- data[[1]]
+  data <- data[-1]
+  
+  # Ensure all traits are included
+  missing_traits <- setdiff(all_traits, rownames(data))
+  
+  if (is_imputation) {
+    # Imputation: Handle missing traits
+    missing_rows <- setdiff(all_traits, rownames(data))
+    missing_cols <- setdiff(all_traits, colnames(data))
+    
+    # Add missing rows
+    if (length(missing_rows) > 0) {
+      missing_rows_df <- matrix(NA, nrow = length(missing_rows), ncol = ncol(data))
+      rownames(missing_rows_df) <- missing_rows
+      colnames(missing_rows_df) <- colnames(data)
+      data <- rbind(data, missing_rows_df)
+    }
+    
+    # Add missing columns
+    if (length(missing_cols) > 0) {
+      missing_cols_df <- matrix(NA, nrow = nrow(data), ncol = length(missing_cols))
+      rownames(missing_cols_df) <- rownames(data)
+      colnames(missing_cols_df) <- missing_cols
+      data <- cbind(data, missing_cols_df)
+    }
+    
+    # Reorder to ensure all_traits are in place
+    data <- data[all_traits, all_traits, drop = FALSE]
+  } else {
+    # Non-imputation: Fill in missing traits with NAs
+    if (nrow(data) != length(all_traits) || ncol(data) != length(all_traits)) {
+      missing_rows_df <- matrix(NA, nrow = length(all_traits) - nrow(data), ncol = ncol(data))
+      rownames(missing_rows_df) <- setdiff(all_traits, rownames(data))
+      colnames(missing_rows_df) <- colnames(data)
+      data <- rbind(data, missing_rows_df)
+      
+      missing_cols_df <- matrix(NA, nrow = nrow(data), ncol = length(all_traits) - ncol(data))
+      rownames(missing_cols_df) <- rownames(data)
+      colnames(missing_cols_df) <- setdiff(all_traits, colnames(data))
+      data <- cbind(data, missing_cols_df)
+      
+      data <- data[all_traits, all_traits, drop = FALSE]
+    }
+  }
+  
+  # Ensure all rows and columns are named correctly
+  if (nrow(data) == length(all_traits) && ncol(data) == length(all_traits)) {
+    rownames(data) <- all_traits
+    colnames(data) <- all_traits
+  }
+  
+  return(data)
+}
+
+# Loop through each file and each sheet to read the data
+anc_recon_cors <- list()
+for (file in file_paths) {
+  for (sheet in sheet_names) {
+    is_imputation <- grepl("imputation_cors", file)
+    data <- read_excel(file, sheet = sheet, col_names = FALSE)
+    data <- adjust_data(data, is_imputation = is_imputation)
+    
+    # Store the data
+    list_name <- paste0(basename(file), "_", sheet)
+    anc_recon_cors[[list_name]] <- as.data.frame(data)  # Store as a data frame
+  }
+}
+
+# Convert to long format 
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(wesanderson)
+
+method_names <- c("recon cors_anc_recon_all_cors.xlsx", "recon cors_anc_recon_anc_cors.xlsx", "recon cors_anc_recon_sp_cors.xlsx", "recon cors_imputation_cors.xlsx")
+equation_names <- c("eq1", "eq2", "eq3", "eq4", "eq5", "eq6", "eq8", "eq9", "eq11")
+
+# Combine all data frames into a single data frame
+combined_data <- bind_rows(
+  lapply(names(anc_recon_cors), function(name) {
+    df <- anc_recon_cors[[name]]
+    df$Method <- gsub("recon cors_|\\.xlsx_eq.*", "", name)
+    df$Equation <- gsub(".*_", "", name)
+    df$Source <- name
+    df %>%
+      rownames_to_column("Trait1") %>%
+      pivot_longer(cols = -c(Trait1, Method, Equation, Source),
+                   names_to = "Trait2",
+                   values_to = "Correlation")
+  })
+)
+
+# View the long format data
+head(combined_data)
+
+# Subset for each method 
+anc_recon_anc <- combined_data %>% filter(Method == "anc_recon_anc_cors")
+anc_recon_sp <- combined_data %>% filter(Method == "anc_recon_sp_cors")
+imputation <- combined_data %>% filter(Method == "imputation_cors")
+
+# Break up traits in new columns 
+anc_recon_all <- combined_data %>% filter(Method == "anc_recon_all_cors")
+anc_recon_all <- anc_recon_all %>%
+  separate(Trait1, into = c("Trait1", "Approach1"), sep = "_(?=[^_]+$)", remove = FALSE) %>%
+  separate(Trait2, into = c("Trait2", "Approach2"), sep = "_(?=[^_]+$)", remove = FALSE)
+anc_recon_all <- anc_recon_all %>%  mutate(Correlation = as.numeric(Correlation))
+anc_recon_all <- anc_recon_all %>%  mutate(Correlation = round(Correlation, 2))
+
+anc_recon_all_Icomp <- anc_recon_all %>%  filter(str_detect(Trait1, "Icomp"))
+anc_recon_all_Icomp <- anc_recon_all_Icomp %>%  filter(str_detect(Trait2, "Icomp"))
+anc_recon_all_Icomp <- anc_recon_all_Icomp %>%  filter(!grepl("phi", Trait1))
+anc_recon_all_Icomp <- anc_recon_all_Icomp %>%  filter(!grepl("phi", Trait2))
+
+anc_recon_all_phi <- anc_recon_all %>%  filter(str_detect(Trait1, "phi_Icomp"))
+anc_recon_all_phi <- anc_recon_all_phi %>%  filter(str_detect(Trait2, "phi_Icomp"))
+
+anc_recon_all_Pmax <- anc_recon_all %>%  filter(str_detect(Trait1, "Pmax"))
+anc_recon_all_Pmax <- anc_recon_all_Pmax %>%  filter(str_detect(Trait2, "Pmax"))
+
+anc_recon_all_Rd <- anc_recon_all %>%  filter(str_detect(Trait1, "Rd"))
+anc_recon_all_Rd <- anc_recon_all_Rd %>%  filter(str_detect(Trait2, "Rd"))
+
+# Scatter plot for anc_recon_all_cors Traits
+anc_recon_all_Pmax$Equation <- factor(anc_recon_all_Pmax$Equation, levels = c("eq1", "eq2", "eq3", "eq4", "eq5", "eq6", "eq8", "eq9", "eq11"))
+
+ggplot(anc_recon_all_Pmax, rm.NA = TRUE, aes(x = Approach1, y = Correlation, color = Approach2)) +
+  geom_point(alpha = 0.7) +
+  scale_y_continuous(limits = c(-1, 1)) +
+  facet_wrap(~ Equation) +
+  scale_color_discrete(breaks= c("eq1", "eq2", "eq3", "eq4", "eq5", "eq6", "eq8", "eq9", "eq11"))+
+  scale_color_manual(values = c("mphys" = "#66cc33", 
+                                "uphys" = "#CC0000", 
+                                "mcurve" = "#33FFFF", 
+                                "ucurve" = "#3333CC")) +
+  theme_minimal() +
+  labs(title = "Ancestral State Reconstruction for Pmax",
+       x = "Reconstruction Approach",
+       y = "Correlations",
+       color = "Approach") +
+      geom_hline(yintercept = 0.38, linetype = "dashed", color = "black", size = 0.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(angle = 45, hjust = 1),
+        # plot.subtitle = element_text(size=8.5, face="italic"),
+        panel.spacing = unit(1, "lines"),
+        panel.border = element_rect(color = "gray", 
+                                    fill = NA, 
+                                    size = .3))
+
+# Break up traits in new columns 
+imputation_recon <- combined_data %>% filter(Method == "imputation_cors")
+imputation_recon <- imputation_recon %>%
+  separate(Trait1, into = c("Trait1", "Approach1"), sep = "_(?=[^_]+$)", remove = FALSE) %>%
+  separate(Trait2, into = c("Trait2", "Approach2"), sep = "_(?=[^_]+$)", remove = FALSE)
+imputation_recon <- imputation_recon %>% filter(!grepl("^Pmax", Trait1))
+imputation_recon <- imputation_recon %>% filter(!grepl("^Pmax", Trait2))
+imputation_recon <- imputation_recon %>%  mutate(Correlation = as.numeric(Correlation))
+imputation_recon <- imputation_recon %>%  mutate(Correlation = round(Correlation, 2))
+
+imputation_recon_Icomp <- imputation_recon %>%  filter(str_detect(Trait1, "Icomp"))
+imputation_recon_Icomp <- imputation_recon_Icomp %>%  filter(str_detect(Trait2, "Icomp"))
+imputation_recon_Icomp <- imputation_recon_Icomp %>%  filter(!grepl("phi", Trait1))
+imputation_recon_Icomp <- imputation_recon_Icomp %>%  filter(!grepl("phi", Trait2))
+
+imputation_recon_phi <- imputation_recon %>%  filter(str_detect(Trait1, "phi_Icomp"))
+imputation_recon_phi <- imputation_recon_phi %>%  filter(str_detect(Trait2, "phi_Icomp"))
+
+imputation_recon_Rd <- imputation_recon %>%  filter(str_detect(Trait1, "Rd"))
+imputation_recon_Rd <- imputation_recon_Rd %>%  filter(str_detect(Trait2, "Rd"))
+
+# Scatter plot for imputation_recon_cors Traits
+imputation_recon_Icomp$Equation <- factor(imputation_recon_Icomp$Equation, levels = paste0("eq", c(1, 2, 3, 4, 5, 6, 8, 9, 11)))
+
+ggplot(imputation_recon_Rd, rm.NA = TRUE, aes(x = Approach1, y = Correlation, color = Approach2)) +
+  geom_point(alpha = 0.7) +
+  scale_y_continuous(limits = c(-1, 1)) +
+  facet_wrap(~ Equation) +
+  scale_color_discrete(breaks= c("eq1", "eq2", "eq3", "eq4", "eq5", "eq6", "eq8", "eq9", "eq11"))+
+  scale_color_manual(values = c("mcurve" = "#66cc33", 
+                                "uphys" = "#CC0000", 
+                                "mphys" = "#33FFFF", 
+                                "ucurve" = "#3333CC")) +
+  theme_minimal() +
+  geom_hline(yintercept = 0.38, linetype = "dashed", color = "black", size = 0.5) +
+  labs(title = "Ancestral State Reconstruction for Rd",
+       subtitle = "Correlations with Imputation Values",
+       x = "Reconstruction Approach",
+       y = "Correlations",
+       color = "Approach") +
+       #size = "Absolute Correlation") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(angle = 45, hjust = 1),
+        plot.subtitle = element_text(size=8.5, face="italic"),
+        panel.spacing = unit(1, "lines"),
+        panel.border = element_rect(color = "gray", 
+                                    fill = NA, 
+                                    size = .3))
+
+# Subset each method
+library(stringr)
+ucurve_traits <- combined_data %>%  filter(str_detect(Trait1, "_ucurve"))
+ucurve_traits <- ucurve_traits %>%  mutate(Correlation = as.numeric(Correlation))
+ucurve_traits <- ucurve_traits %>%  mutate(Correlation = round(Correlation, 2))
+head(ucurve_traits)
+ucurve_traits$Trait1 <- gsub("_ucurve", "", ucurve_traits$Trait1)
+mcurve_traits <- combined_data %>%  filter(str_detect(Trait1, "_mcurve"))
+mcurve_traits <- mcurve_traits %>%  mutate(Correlation = as.numeric(Correlation))
+mcurve_traits <- mcurve_traits %>%  mutate(Correlation = round(Correlation, 2))
+head(mcurve_traits)
+mcurve_traits$Trait1 <- gsub("_mcurve", "", mcurve_traits$Trait1)
+uphys_traits <- combined_data %>%  filter(str_detect(Trait1, "_uphys"))
+uphys_traits <- uphys_traits %>%  mutate(Correlation = as.numeric(Correlation))
+uphys_traits <- uphys_traits %>%  mutate(Correlation = round(Correlation, 2))
+head(uphys_traits)
+uphys_traits$Trait1 <- gsub("_uphys", "", uphys_traits$Trait1)
+mphys_traits <- combined_data %>%  filter(str_detect(Trait1, "_mphys"))
+mphys_traits <- mphys_traits %>%  mutate(Correlation = as.numeric(Correlation))
+mphys_traits <- mphys_traits %>%  mutate(Correlation = round(Correlation, 2))
+head(mphys_traits)
+mphys_traits$Trait1 <- gsub("_mphys", "", mphys_traits$Trait1)
+
+
+# Subset each trait and each method 
+ucurve_traits_all <- ucurve_traits %>% filter(Method == "anc_recon_all_cors")
+mcurve_traits_all <- mcurve_traits %>% filter(Method == "anc_recon_all_cors")
+uphys_traits_all <- ucurve_traits %>% filter(Method == "anc_recon_all_cors")
+mphys_traits_all <- mcurve_traits %>% filter(Method == "anc_recon_all_cors")
+
+# Scatter plot for anc_recon_all_curves
+ggplot(mcurve_traits_all, rm.NA = TRUE, aes(x = Trait1, y = Correlation, color = Equation)) +
+  geom_point(alpha = 0.7) +
+  scale_y_continuous(limits = c(-1, 1)) +
+  scale_color_discrete(breaks= c("eq1", "eq2", "eq3", "eq4", "eq5", "eq6", "eq8", "eq9", "eq11"))+
+  facet_wrap(~ Trait2) +
+  theme_minimal() +
+  labs(title = "Multivariate Curve Trait Correlations",
+       subtitle = "All Ancestral State Reconstructions",
+       x = "Multivariate Curve Derived Traits",
+       y = "Correlations",
+       color = "Equation") +
+       #size = "Absolute Correlation") +
+  geom_hline(yintercept = 0.38, linetype = "dashed", color = "black", size = 0.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(angle = 45, hjust = 1),
+        plot.subtitle=element_text(size=8.5, face="italic"))
+
+# Subset each trait and each method 
+ucurve_traits_nodes <- ucurve_traits %>% filter(Method == "anc_recon_anc_cors")
+mcurve_traits_nodes <- mcurve_traits %>% filter(Method == "anc_recon_anc_cors")
+uphys_traits_nodes <- ucurve_traits %>% filter(Method == "anc_recon_anc_cors")
+mphys_traits_nodes <- mcurve_traits %>% filter(Method == "anc_recon_anc_cors")
+
+# Scatter plot for anc_recon_anc_cors
+ggplot(mphys_traits_nodes, rm.NA = TRUE, aes(x = Trait1, y = Correlation, color = Equation)) +
+  geom_point(alpha = 0.7) +
+  scale_y_continuous(limits = c(-1, 1)) +
+  scale_color_discrete(breaks= c("eq1", "eq2", "eq3", "eq4", "eq5", "eq6", "eq8", "eq9", "eq11"))+
+  facet_wrap(~ Trait2) +
+  theme_minimal() +
+  geom_hline(yintercept = 0.38, linetype = "dashed", color = "black", size = 0.5) +
+  labs(title = "Multivariate Phys. Trait Correlations",
+       subtitle = "Ancestral State Node Reconstructions",
+       x = "Multivariate Phys. Derived Traits",
+       y = "Correlations",
+       color = "Equation") +
+       #size = "Absolute Correlation") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(angle = 45, hjust = 1),
+        plot.subtitle=element_text(size=8.5, face="italic"))
+
+# Subset each trait and each method 
+ucurve_traits_tips <- ucurve_traits %>% filter(Method == "anc_recon_sp_cors")
+mcurve_traits_tips <- mcurve_traits %>% filter(Method == "anc_recon_sp_cors")
+uphys_traits_tips <- ucurve_traits %>% filter(Method == "anc_recon_sp_cors")
+mphys_traits_tips <- mcurve_traits %>% filter(Method == "anc_recon_sp_cors")
+
+# Scatter plot for anc_recon_sp_cors
+ggplot(mcurve_traits_tips, rm.NA = TRUE, aes(x = Trait1, y = Correlation, color = Equation)) +
+  geom_point(alpha = 0.7) +
+  scale_y_continuous(limits = c(-1, 1)) +
+  scale_color_discrete(breaks= c("eq1", "eq2", "eq3", "eq4", "eq5", "eq6", "eq8", "eq9", "eq11"))+
+  facet_wrap(~ Trait2) +
+  theme_minimal() +
+  labs(title = "Multivariate Curve Trait Correlations",
+       subtitle = "Ancestral State Species Reconstructions",
+       x = "Multivariate Curve Derived Traits",
+       y = "Correlations",
+       color = "Equation") +
+       #size = "Absolute Correlation") +
+  geom_hline(yintercept = 0.38, linetype = "dashed", color = "black", size = 0.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(angle = 45, hjust = 1),
+        plot.subtitle=element_text(size=8.5, face="italic"))
+
+# Subset each trait and each method 
+ucurve_traits_imps <- ucurve_traits %>% filter(Method == "imputation_cors")
+mcurve_traits_imps <- mcurve_traits %>% filter(Method == "imputation_cors")
+uphys_traits_imps <- ucurve_traits %>% filter(Method == "imputation_cors")
+mphys_traits_imps <- mcurve_traits %>% filter(Method == "imputation_cors")
+
+# Remove NA traits
+ucurve_traits_imps <- ucurve_traits_imps %>%
+  filter(!grepl("^Pmax", Trait1))
+mcurve_traits_imps <- mcurve_traits_imps %>%
+  filter(!grepl("^Pmax", Trait1))
+uphys_traits_imps <- uphys_traits_imps %>%
+  filter(!grepl("^Pmax", Trait1))
+mphys_traits_imps <- mphys_traits_imps %>%
+  filter(!grepl("^Pmax", Trait1))
+ucurve_traits_imps <- ucurve_traits_imps %>%
+  filter(!grepl("^Pmax", Trait2))
+mcurve_traits_imps <- mcurve_traits_imps %>%
+  filter(!grepl("^Pmax", Trait2))
+uphys_traits_imps <- uphys_traits_imps %>%
+  filter(!grepl("^Pmax", Trait2))
+mphys_traits_imps <- mphys_traits_imps %>%
+  filter(!grepl("^Pmax", Trait2))
+
+# Scatter plot for imputation_cors
+ggplot(mcurve_traits_imps, rm.NA = TRUE, aes(x = Trait1, y = Correlation, color = Equation)) +
+  geom_point(alpha = 0.7) +
+  scale_y_continuous(limits = c(-1, 1)) +
+  scale_color_discrete(breaks= c("eq1", "eq2", "eq3", "eq4", "eq5", "eq6", "eq8", "eq9", "eq11"))+
+  facet_wrap(~ Trait2) +
+  theme_minimal() +
+  labs(title = "Multivariate Curve Trait Correlations",
+       subtitle = "Ancestral State Reconstructions vs Imputation Values",
+       x = "Multivariate Curve Derived Traits",
+       y = "Correlations",
+       color = "Equation") +
+       #size = "Absolute Correlation") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(angle = 45, hjust = 1),
+        plot.subtitle=element_text(size=8.5, face="italic"))
+
+```
+
+Plotting ancestral state reconstruction to visualize trait stability 
+#redo a lil 
+```{r}
+
+# Data tables: 
+univar_recon_curve
+univar_recon_curve_pars
+univar_recon_phys
+multivar_recon_curve
+multivar_recon_curve_pars
+multivar_recon_phys
+# species mean from the evolutionary model 
+# (incorporates a shrinkage estimate based on phylogenetic relatedness) 
+
+# Long Hand Format
+multi_recon_curve1 <-multivar_recon_curve[[1]]
+Pmaxobs_MRCe1 <- multi_recon_curve1[,1]
+Icomp_MRCe1 <- multi_recon_curve1[,2]
+phi_MRCe1 <- multi_recon_curve1[,3]
+Rd_MRCe1 <- multi_recon_curve1[,4]
+
+MRCe1_Pmaxobs_species <- Pmaxobs_MRCe1[1:28]
+MRCe1_Icomp_species <- Icomp_MRCe1[1:28]
+MRCe1_phi_species <- phi_MRCe1[1:28]
+MRCe1_Rd_species <- Rd_MRCe1[1:28]
+
+MRCe1_Pmaxobs_nodes <- Pmaxobs_MRCe1[29:55]
+MRCe1_Icomp_nodes <- Icomp_MRCe1[29:55]
+MRCe1_phi_nodes <- phi_MRCe1[29:55]
+MRCe1_Rd_nodes <- Rd_MRCe1[29:55]
+
+names(MRCe1_Pmaxobs_species) <- tree$tip.label
+names(MRCe1_Icomp_species) <- tree$tip.label
+names(MRCe1_phi_species) <- tree$tip.label
+names(MRCe1_Rd_species) <- tree$tip.label
+
+# Plot ContMap
+par(mar = c(5, 4, 4, 6) + 0.1, oma = c(2, 2, 2, 2))
+phytools::contMap(tree,MRCe1_Pmaxobs_species,method = "user",anc.states = MRCe1_Pmaxobs_nodes)
+title(main = "Multivariate Trait-Based Anc. Recon for Pmax_obs (eq1)", cex = 1, outer = TRUE)
+phytools::contMap(tree,MRCe1_Icomp_species,method = "user",anc.states = MRCe1_Icomp_nodes)
+title(main = "Multivariate Trait-Based Anc. Recon for Icomp (eq1)", cex = 1, outer = TRUE)
+phytools::contMap(tree,MRCe1_phi_species,method = "user",anc.states = MRCe1_phi_nodes)
+title(main = "Multivariate Trait-Based Anc. Recon for PHI (eq1)", cex = 1, outer = TRUE)
+phytools::contMap(tree,MRCe1_Rd_species,method = "user",anc.states = MRCe1_Rd_nodes)
+title(main = "Multivariate Trait-Based Anc. Recon for Rd (eq1)", cex = 1, outer = TRUE)
+
+
+# Plot and Save in a Loop 
+recon_traits <- c("Pmax_obs", "Icomp", "phi_Icomp", "Rd")
+equation_numbers <- c(1, 2, 3, 4, 5, 6, 8, 9, 11)
+output_folder <- "C:/Users/rebek/Desktop/Research & Projects/CH1_Variation of Photosynthetic Light Response in Wild Sunflower/Data/Ancestral State Reconstructions"
+
+# Multuvariate Curve Reconstruction 
+for (i in seq_along(equation_numbers)) {
+ 
+   multi_recon_curve <- multivar_recon_curve[[i]]
+  
+  for (j in 1:4) {
+    # Extract species and node values
+    species_values <- multi_recon_curve[1:28, j]  # First 28 are species
+    node_values <- multi_recon_curve[29:55, j]    # 29 to 55 are nodes
+
+    names(species_values) <- tree$tip.label
+    
+    # Set Output 
+    file_name <- paste0(output_folder, "/Multivariate_Curve_Anc_Recon_", recon_traits[j], "_eq", equation_numbers[i], ".svg")
+    print(paste("Saving to:", file_name))
+    
+    svg(file_name, width = 10, height = 8)
+    
+    # Generate the contMap plot
+    par(mar = c(5, 4, 4, 6) + 0.1, oma = c(2, 2, 2, 2), xpd = NA)
+    phytools::contMap(tree, species_values, method = "user", anc.states = node_values)
+    title(main = paste("Multivar. Curve-Based Anc. Recon for", recon_traits[j], "(eq", equation_numbers[i], ")"), cex = 1, outer = TRUE)
+    
+    dev.off()
+    
+    # Pause to ensure the plot is rendered
+    Sys.sleep(0.1)
+    }
+}
+# Multivariate Trait Reconstruction 
+for (i in seq_along(equation_numbers)) {
+ 
+   multi_recon_phys <- multivar_recon_phys[[i]]
+  
+  for (j in 1:4) {
+    # Extract species and node values
+    species_values <- multi_recon_phys[1:28, j]  # First 28 are species
+    node_values <- multi_recon_phys[29:55, j]    # 29 to 55 are nodes
+
+    names(species_values) <- tree$tip.label
+    
+    # Set Output 
+    file_name <- paste0(output_folder, "/Multivariate_Trait_Anc_Recon_", recon_traits[j], "_eq", equation_numbers[i], ".svg")
+    print(paste("Saving to:", file_name))
+    
+    svg(file_name, width = 10, height = 8)
+    
+    # Generate the contMap plot
+    par(mar = c(5, 4, 4, 6) + 0.1, oma = c(2, 2, 2, 2), xpd = NA)
+    phytools::contMap(tree, species_values, method = "user", anc.states = node_values)
+    title(main = paste("Multivar. Trait-Based Anc. Recon for", recon_traits[j], "(eq", equation_numbers[i], ")"), cex = 1, outer = TRUE)
+    
+    dev.off()
+    
+    # Pause to ensure the plot is rendered
+    Sys.sleep(0.1)
+  }
+}   
+
+# Univariate Curve Reconstruction
+for (i in seq_along(equation_numbers)) {
+ 
+   uni_recon_curve <- univar_recon_curve[[i]]
+  
+  for (j in 1:4) {
+    # Extract species and node values
+    species_values <- uni_recon_curve[1:28, j]  # First 28 are species
+    node_values <- uni_recon_curve[29:55, j]    # 29 to 55 are nodes
+
+    names(species_values) <- tree$tip.label
+    
+    # Set Output 
+    file_name <- paste0(output_folder, "/Univariate_Curve_Anc_Recon_", recon_traits[j], "_eq", equation_numbers[i], ".svg")
+    print(paste("Saving to:", file_name))
+    
+    svg(file_name, width = 10, height = 8)
+    
+    # Generate the contMap plot
+    par(mar = c(5, 4, 4, 6) + 0.1, oma = c(2, 2, 2, 2), xpd = NA)
+    phytools::contMap(tree, species_values, method = "user", anc.states = node_values)
+    title(main = paste("Univar. Curve-Based Anc. Recon for", recon_traits[j], "(eq", equation_numbers[i], ")"), cex = 1, outer = TRUE)
+    
+    dev.off()
+    
+    # Pause to ensure the plot is rendered
+    Sys.sleep(0.1)
+  }
+}
+# Univariate Trait Reconstruction
+for (i in seq_along(equation_numbers)) {
+ 
+   uni_recon_phys <- univar_recon_phys[[i]]
+  
+  for (j in 1:4) {
+    # Extract species and node values
+    species_values <- uni_recon_phys[1:28, j]  # First 28 are species
+    node_values <- uni_recon_phys[29:55, j]    # 29 to 55 are nodes
+    
+    names(species_values) <- tree$tip.label
+    
+    # Set Output 
+    file_name <- paste0(output_folder, "/Univariate_Trait_Anc_Recon_", recon_traits[j], "_eq", equation_numbers[i], ".svg")
+    print(paste("Saving to:", file_name))
+    
+    svg(file_name, width = 10, height = 8)
+    
+    # Generate the contMap plot
+    par(mar = c(5, 4, 4, 6) + 0.1, oma = c(2, 2, 2, 2), xpd = NA)
+    phytools::contMap(tree, species_values, method = "user", anc.states = node_values)
+    title(main = paste("Univar. Trait-Based Anc. Recon for", recon_traits[j], "(eq", equation_numbers[i], ")"), cex = 1, outer = TRUE)
+    
+    dev.off()
+    
+    # Pause to ensure the plot is rendered
+    Sys.sleep(0.1)
+  }
+}   
+# Univariate Curve Parameter Reconstruction
+recon_pars <- c("Pmax_obs", "I15", "I25", "I85", "I95")
+for (i in seq_along(equation_numbers)) {
+  uni_recon_curve_pars <- univar_recon_curve_pars[[i]]
+  
+  for (j in 1:5) {
+    # Extract species and node values
+    species_values <- uni_recon_curve_pars[1:28, j]  # First 28 are species
+    node_values <- uni_recon_curve_pars[29:55, j]    # 29 to 55 are nodes
+
+    names(species_values) <- tree$tip.label
+    
+    # Set Output 
+    file_name <- paste0(output_folder, "/Univariate_Curve_Pars_Anc_Recon_", recon_pars[j], "_eq", equation_numbers[i], ".svg")
+    print(paste("Saving to:", file_name))
+    
+    svg(file_name, width = 10, height = 8)
+    
+    # Generate the contMap plot
+    par(mar = c(5, 4, 4, 6) + 0.1, oma = c(2, 2, 2, 2), xpd = NA)
+    phytools::contMap(tree, species_values, method = "user", anc.states = node_values)
+    title(main = paste("Univar. Curve-Based Pars Anc. Recon for", recon_pars[j], "(eq", equation_numbers[i], ")"), cex = 1, outer = TRUE)
+    
+    dev.off()
+    
+    # Pause to ensure the plot is rendered
+    Sys.sleep(0.1)
+  }
+}  
+
+# Multivariate Curve Parameter Reconstruction
+recon_pars <- c("Pmax_obs", "I15", "I25", "I85", "I95")
+for (i in seq_along(equation_numbers)) {
+  multi_recon_curve_pars <- multivar_recon_curve_pars[[i]]
+  
+  for (j in 1:5) {
+    # Extract species and node values
+    species_values <- multi_recon_curve_pars[1:28, j]  # First 28 are species
+    node_values <- multi_recon_curve_pars[29:55, j]    # 29 to 55 are nodes
+
+    names(species_values) <- tree$tip.label
+    
+    # Set Output 
+    file_name <- paste0(output_folder, "/Multivariate_Curve_Pars_Anc_Recon_", recon_pars[j], "_eq", equation_numbers[i], ".svg")
+    print(paste("Saving to:", file_name))
+    
+    svg(file_name, width = 10, height = 8)
+    
+    # Generate the contMap plot
+    par(mar = c(5, 4, 4, 6) + 0.1, oma = c(2, 2, 2, 2), xpd = NA)
+    phytools::contMap(tree, species_values, method = "user", anc.states = node_values)
+    title(main = paste("Multivar. Curve-Based pars Anc. Recon for", recon_pars[j], "(eq", equation_numbers[i], ")"), cex = 1, outer = TRUE)
+    
+    dev.off()
+    
+    # Pause to ensure the plot is rendered
+    Sys.sleep(0.1)
+  }
+}
+
+#anc_recon 
+#inclues species means with evolutiotionary model 
+#load anc recon and only keep species (discard node numbers)
+#treat species values as trait values 
+#it will technically reperform the analysis but shouldn't change too much since variation isnt included in this data set 
+# can input user supply states without reperforming it 
+  # anc.states
+
+# comparing anc recons for multi- and univariate trait values shows agreement between each approach but also shows the robustness of multivariate models, and increased power
+```
+
+
